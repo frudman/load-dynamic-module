@@ -20,6 +20,8 @@ const settings = {
     logInfo: console.log.bind(console),
     logError: console.error.bind(console),
     actualUrl: basicActualUrl, // give callers control over final url
+    async download(url) { return axios.get(url); }, // async method to download item: expect .data & .request.responseURL
+    // todo: turn above as simple methods
 };
 
 loadModuleByUrl.settings = options => {
@@ -76,7 +78,7 @@ export default async function loadModuleByUrl(moduleRequestUrl, dependent) {
             });
 
             try {
-                const m = await axios.get(actualModuleUrl);
+                const m = await settings.download(actualModuleUrl);
                 logInfo(`DOWNLOADED MODULE=${moduleRequestUrl}${(moduleRequestUrl === actualModuleUrl ? '' : ` [from ${actualModuleUrl}]`)}`, m);
 
                 const code = m.data; // may be AMD/UMD or CommonJS
