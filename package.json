@@ -4,7 +4,12 @@
   "description": "a browser-based loader that works with both AMD and CommonJS modules",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "rm -rf lib && webpack --config webpack.config.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/frudman/load-dynamic-module.git"
   },
   "keywords": [
     "module",
@@ -22,5 +27,12 @@
     "client"
   ],
   "author": "Frederic Rudman",
-  "license": "ISC"
+  "license": "ISC",
+  "dependencies": {
+    "axios": "^0.18.0"
+  },
+  "devDependencies": {
+    "webpack": "^4.28.4",
+    "webpack-cli": "^3.2.1"
+  }
 }

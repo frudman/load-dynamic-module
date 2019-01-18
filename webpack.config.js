@@ -1,0 +1,81 @@
+
+// - to build libs: npm run build
+// - to run tests: npm run test
+// - don't forget to:
+//  - update package.json[.version]
+//  - then: npm publish
+
+// webpack strategy inspired from: https://tech.trivago.com/2015/12/17/export-multiple-javascript-module-formats/
+
+// todo: re-implement using https://www.npmjs.com/package/parallel-webpack
+//       - same as below but done in parallel (and .variant() function already implemented)
+
+const { deepClone, genCombinations } = require('./utils');
+
+function genBuildConfiguration(baseConfig, opt) {
+    // start with base config
+    const config = deepClone(baseConfig); 
+
+    // customize it
+    config.output.filename = `lib/${opt.target.lib}/es${opt.ecma}/index${opt.includeAxios ? '.withAxios' : ''}${opt.minimize?'.min':''}.js`;
+    config.output.libraryTarget = opt.target.name; // amd, umd, commonjs, ...
+
+    config.externals = opt.includeAxios ? {} : { axios:'axios' };
+
+    if (config.optimization.minimize = opt.minimize)
+        config.optimization.minimizer = [ minimizerConfig(opt.ecma) ];
+
+    // done
+    return config;
+}
+
+// "maintained" minimizer for webpack (from https://github.com/terser-js/terser)
+const TerserPlugin = require('terser-webpack-plugin');
+
+const minimizerConfig = ecmaVersion => new TerserPlugin({
+    terserOptions: {
+        // from: https://github.com/terser-js/terser#minify-options-structure
+        // and: https://github.com/webpack-contrib/terser-webpack-plugin#terseroptions
+        // - basic settings below (many more available)
+
+        ecma: ecmaVersion,
+        mangle: true, // Note `mangle.properties` is `false` by default.
+
+        output: {
+            comments: false, // https://github.com/webpack-contrib/terser-webpack-plugin#remove-comments
+        },
+
+        ie8: false,
+        keep_classnames: undefined,
+        keep_fnames: false,
+        safari10: false,
+    },
+});
+
+const baseBuildConfig = {
+    mode: 'production',
+    entry: './index.mjs',
+    output: { 
+        path: __dirname, 
+    }, 
+    externals: {
+        'axios': 'axios',
+    },
+    optimization: {
+        minimize: false, // parms below will update this
+    },
+}
+
+const buildConfigurations = Array.from(genCombinations({
+    target: [ 
+        { lib: 'umd',  name: 'umd', },
+        { lib: 'amd',  name: 'amd', },
+        { lib: 'cjs2', name: 'commonjs2', },
+        { lib: 'cjs',  name: 'commonjs', }
+    ],
+    includeAxios: [true, false],
+    minimize: [ false, true ],
+    ecma: [ 5, 6 ],//, 7, 8],
+})).map(options => genBuildConfiguration(baseBuildConfig, options));
+
+module.exports = buildConfigurations;
