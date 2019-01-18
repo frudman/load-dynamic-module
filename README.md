@@ -1,6 +1,9 @@
 # load-dynamic-module
 a browser-based loader that works with both AMD and CommonJS modules
 
+**NOT YET WORKING**
+**DO NOT USE**
+
 - minimal IF already using AXIOS in app (will reuse that module to actually get remote modules)
 - webpacked with and without AXIOS (without means define(['axios'], ...))
 - best use is to import this module in an app that then gets bundled (webpack, rollup) with axios
