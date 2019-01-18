@@ -1,37 +1,13 @@
 import axios from 'axios';
 
-// Some alternatives (though not complete as per our reqs): 
-// - minimal REQUIRE implementation: https://eloquentjavascript.net/10_modules.html
-// - http://stuk.github.io/require1k/
-
-// NPM package.json DOC: https://docs.npmjs.com/files/package.json
-// also: https://github.com/defunctzombie/package-browser-field-spec
-
-// es2015 === es6 modules: import x from 'y';
-// commonjs2: for node, module.exports = _entry_return_; // uses require('dep') for dependencies
-// amd: for browsers, define([...deps],function(...deps){}) 
-//      - should not use require; all deps are upfront in deps array
-
-// AMD: 
-// - define(name, [deps], fcn) ===> modules[name/url] = fcn(...resolvedDeps);
-//      - this is how to define a module
-//      - fcn executed once, then cached for that name
-//          - fcn must RETURN its module (e.g. an object of methods)
-//      - fcn executed AFTER all deps are loaded & resolved
-// - require([deps], fcn) is how to USE/EXECUTE a module:
-//      - module is represented by fcn
-//      - module is executed by calling fcn(deps)
-//          - but only once all deps are loaded
-
-// todo: **could** allow require from within an AMD module (use same technique as for commonjs modules)
-//       - not standard, but so what... (simplifies writing manually-written plugins perhaps?)
-
 // prevent webpack/babel from removing async syntax (which neutralizes intended effect)
 // see: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/AsyncFunction
 const AsyncFunction = new Function(`return Object.getPrototypeOf(async function(){}).constructor`)();
 
+// turn cjs sync requires to async
 const cjsToAwaitRequire = cjs => cjs.replace(/\brequire\s*[(]/g, 'await require(');
 
+// trivial test
 const isCommonJS = code => /module[.]exports/.test(code);
 
 function basicActualUrl(requestedUrl) {
@@ -48,7 +24,7 @@ const settings = {
 
 loadModuleByUrl.settings = options => {
     Object.assign(settings, options);
-    return loadModuleByUrl; // for chaining
+    return loadModuleByUrl; // chaining
 }
 
 export const loadedModules = {};
@@ -109,9 +85,9 @@ export default async function loadModuleByUrl(moduleRequestUrl, dependent) {
                 // - MUST pass dummy (i.e. undefined) module/exports/require else would use those from global context (if any)
                 const initModule = new Function('define', 'module', 'exports', 'require', code); 
 
-                // IMPORTANT: all AMD modules test for 'define.amd' being truthy
-                //            but some (e.g. lodash) ALSO check that typeof define.amd == 'object' so...
-                amdDefine.amd = {}; // ...an object (truthy) NOT 'true' (as per above note)
+                // IMPORTANT: all AMD modules test for 'define.amd' being 'truthy'
+                //            but some (e.g. lodash) ALSO check that "typeof define.amd == 'object'" so...
+                amdDefine.amd = {}; // ...use an object (truthy) NOT 'true'
 
                 // keep track of whether or not our define method was actually called...
                 var isAMD = false; // ...because if not called, likely NOT an AMD module
@@ -140,7 +116,7 @@ export default async function loadModuleByUrl(moduleRequestUrl, dependent) {
                 }
 
                 try {
-                    let undefined_module, // unassigned means undefined
+                    let undefined_module, // unassigned === undefined
                         undefined_exports, // ditto
                         dummy_require = () => {throw new Error('require is invalid in AMD modules: ' + moduleRequestUrl);};
 
