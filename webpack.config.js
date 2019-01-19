@@ -17,10 +17,11 @@ function genBuildConfiguration(baseConfig, opt) {
     const config = deepClone(baseConfig); 
 
     // customize it
-    config.output.filename = `lib/${opt.target.lib}/es${opt.ecma}/index${opt.includeAxios ? '.withAxios' : ''}${opt.minimize?'.min':''}.js`;
+    //config.output.filename = `lib/${opt.target.lib}/es${opt.ecma}/index${opt.includeAxios ? '.withAxios' : ''}${opt.minimize?'.min':''}.js`;
+    config.output.filename = `lib/${opt.target.lib}/es${opt.ecma}/index${opt.minimize?'.min':''}.js`;
     config.output.libraryTarget = opt.target.name; // amd, umd, commonjs, ...
 
-    config.externals = opt.includeAxios ? {} : { axios:'axios' };
+    //config.externals = opt.includeAxios ? {} : { axios:'axios' };
 
     if (config.optimization.minimize = opt.minimize)
         config.optimization.minimizer = [ minimizerConfig(opt.ecma) ];
@@ -58,9 +59,9 @@ const baseBuildConfig = {
     output: { 
         path: __dirname, 
     }, 
-    externals: {
-        'axios': 'axios',
-    },
+    // externals: {
+    //     'axios': 'axios',
+    // },
     optimization: {
         minimize: false, // parms below will update this
     },
@@ -73,7 +74,7 @@ const buildConfigurations = Array.from(genCombinations({
         { lib: 'cjs2', name: 'commonjs2', },
         { lib: 'cjs',  name: 'commonjs', }
     ],
-    includeAxios: [true, false],
+    //includeAxios: [true, false],
     minimize: [ false, true ],
     ecma: [ 5, 6 ],//, 7, 8],
 })).map(options => genBuildConfiguration(baseBuildConfig, options));
