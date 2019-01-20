@@ -90,7 +90,7 @@ export default async function loadModuleByUrl(moduleRequestUrl, askingUrl = wind
 
         function moduleIsNowResolved(m, type) {
             if (arguments.length === 1) {
-                log('MODULE LOADING ERROR', dispmod, '\n...', (module.err = m).name, m.message);
+                log('MODULE LOADING ERROR', dispmod, '\n...', (module.err = m).name, m.message); // module will be unusable (& likely its dependents)
             }
             else {
                 module.module = m; 
