@@ -1,13 +1,17 @@
+// method used to actually download modules
+import { http as download} from './http-get'; 
+
 // prevent webpack/babel from removing async syntax (which neutralizes intended effect)
 // see: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/AsyncFunction
 const AsyncFunction = new Function(`return Object.getPrototypeOf(async function(){}).constructor`)();
 
-// turn cjs sync requires to async
+// turn commonjs requires (sync) to async
 const cjsToAwaitRequire = cjs => cjs.replace(/\brequire\s*[(]/g, 'await require(');
 
-// trivial test
+// quick way to see if code is [likely] commonjs
 const isCommonJS = code => /module[.]exports/.test(code);
 
+// convert a dependancy reference to its http-gettable url
 function basicActualUrl(requestedUrl) {
     return /^(https?[:])?[/][/]/i.test(requestedUrl) ? requestedUrl // explicit url so leave it alone
                     : /^[a-z_$]/i.test(requestedUrl) ? `https://unpkg.com/${requestedUrl}` // simple name so use NPM (via unpkg)
@@ -17,79 +21,57 @@ function basicActualUrl(requestedUrl) {
 // todo: create: npm run inc: incr [package.json.version] && git add . && git commit -m 'misc' && git push && npm publish
 // need to write 'incr'
 
-// todo: on-demand-requires in AMD modules? or just have them use this module as dependent?
+// const settings = {
+//     actualUrl: basicActualUrl, // give callers control over final url
+//     //async download(url) { return http(url); }, // async method to download item: expect .data & .responseURL (in case of redirects)
+// };
 
-function http(url, {method = 'GET', retry = 3} = {}) {
-
-    // read: https://gomakethings.com/promise-based-xhr/
-    // also: https://gomakethings.com/why-i-still-use-xhr-instead-of-the-fetch-api/
-    // ref: https://developer.mozilla.org/en-US/docs/Web/API/XMLHttpRequest
-    // ref: https://developer.mozilla.org/en-US/docs/Web/API/XMLHttpRequest/Using_XMLHttpRequest
-
-	return new Promise((resolve,reject) => {
-
-        // Create the XHR request
-        const request = new XMLHttpRequest();
-
-		// Setup our listener to process compeleted requests
-		request.onreadystatechange = () => {
-
-			// Only run if the request is complete
-			if (request.readyState !== 4) return;
-
-			// Process the response
-			if (request.status >= 200 && request.status < 300) {
-				resolve({ // success
-                    data: request.responseText,
-                    responseURL: request.responseURL, // NOT Supported by IE
-                });
-			} else if (request.status >= 500 && request.status < 600 && retry-- > 0) {
-                // server error: retry after a brief delay
-                setTimeout(() => {
-                    http(url, {method, retry})
-                        .then(resolve)
-                        .catch(reject);
-                }, 2000);
-            } else { // 4xx errors
-				reject({
-                    status: request.status,
-                    statusText: request.statusText
-                })
-			}
-        };
-        
-        // Setup our HTTP request
-		request.open(method || 'GET', url, true); // last parm true === make it async
-
-		// Send the request
-		request.send();
-	});
+var resolveURL = basicActualUrl;
+loadModuleByUrl.setUrlResolver = customResolver => {
+    resolveURL = customResolver || basicActualUrl; // so set to null to reset
+    return loadModuleByUrl; // can chain op
 }
 
-const settings = {
-    actualUrl: basicActualUrl, // give callers control over final url
-    async download(url) { return http(url); }, // async method to download item: expect .data & .responseURL (in case of redirects)
-};
-
-loadModuleByUrl.settings = options => {
-    Object.assign(settings, options);
-    return loadModuleByUrl; // chaining
-}
+// loadModuleByUrl.settings = options => {
+//     Object.assign(settings, options);
+//     return loadModuleByUrl; // chaining
+// }
 
 export const loadedModules = {};
+
+function addKnownModule(name, module) {
+    loadedModules[name] = {
+        isKnown: true,
+        isLoaded: true,
+        type: 'isBuiltin',
+        module,
+    };
+}
+
+addKnownModule('load-dynamic-module', loadModuleByUrl); // trivial case
+addKnownModule('require-async', requireAsync); // lets amd modules load deps on-demand
+addKnownModule('async-require', requireAsync); // alias
+
+async function requireAsync(url) {
+    const requested = await loadModuleByUrl(url);
+    return requested.module; 
+}
+
+
 export default async function loadModuleByUrl(moduleRequestUrl, dependent) {
 
-    // reject is NEVER used: unloadable modules (e.g. network|syntax errors) simply set to undefined
-    return new Promise(async resolve => { // NO 'reject' as per above...
+    // loadModuleByUrl NEVER FAILS:
+    // - unloadable modules (e.g. network|syntax errors) simply set to undefined
+    // - so reject (below) is NEVER used
+
+
+
+    return new Promise(async resolve => { // NO 'reject' param as per above...
 
         const module = loadedModules[moduleRequestUrl] || (loadedModules[moduleRequestUrl] = { isKnown: false, module: undefined });
 
-        function resolvedModule(m, type) {
-            // if (err)
-            //     logError(moduleRequestUrl.toUpperCase() + ' module: FAILED TO LOAD', type, err);
-            // else
-            //     logInfo(moduleRequestUrl.toUpperCase() + ' module: LOADED', type, m);
-            if (arguments.length === 1) {//m instanceof Error) {
+        function moduleIsNowResolved(m, type) {
+            if (arguments.length === 1) {
                 module.err = m;
             }
             else {
@@ -97,8 +79,12 @@ export default async function loadModuleByUrl(moduleRequestUrl, dependent) {
                 module.type = type;
             }
             module.isLoaded = !module.err;
-            module.listeners.forEach(listener => listener(module)); // resolve waiting modules: M or MODULE???
-            resolve(module); // resolve this one
+
+            // then, resolve modules waiting on this one
+            module.listeners.forEach(listener => listener(module));
+
+            // then, resolve this one
+            resolve(module);
         }
 
         if (module.isKnown) {
@@ -107,17 +93,17 @@ export default async function loadModuleByUrl(moduleRequestUrl, dependent) {
             else {
                 if (dependent) {
                     const cycle = module.dependents.find(m => m === dependent);
-                    if (cycle) {
-                        return resolvedModule(new Error('CYCLYCAL DEPENDENCY: ' + moduleRequestUrl + '<-->' + cycle));
-                    }
-                    module.dependents.push(dependent);
+                    if (cycle)
+                        return moduleIsNowResolved(new Error('CYCLYCAL DEPENDENCY: ' + moduleRequestUrl + '<-->' + cycle));
+                    else
+                        module.dependents.push(dependent);
                 }
 
-                module.listeners.push(mod => resolve(mod)); // ??? needs TESTING
+                module.listeners.push(resolvedModule => resolve(resolvedModule)); // ??? needs TESTING
             }
         }
         else { // loading a new module
-            const actualModuleUrl = settings.actualUrl(moduleRequestUrl, basicActualUrl);
+            const actualModuleUrl = resolveURL(moduleRequestUrl, basicActualUrl); // always make default available to custom resolvers
 
             Object.assign(module, {
                 isKnown: true,
@@ -128,7 +114,7 @@ export default async function loadModuleByUrl(moduleRequestUrl, dependent) {
             });
 
             try {
-                const m = await settings.download(actualModuleUrl);
+                const m = await download(actualModuleUrl);
                 //logInfo(`DOWNLOADED MODULE=${moduleRequestUrl}${(moduleRequestUrl === actualModuleUrl ? '' : ` [from ${actualModuleUrl}]`)}`, m);
 
                 const code = m.data; // may be AMD/UMD or CommonJS
@@ -136,6 +122,8 @@ export default async function loadModuleByUrl(moduleRequestUrl, dependent) {
                 // Favor AMD modules first because no need for code manipulation and many browser-based modules are AMD/UMD anyway
                 // - MUST pass dummy (i.e. undefined) module/exports/require else would use those from global context (if any)
                 const initModule = new Function('define', 'module', 'exports', 'require', code); 
+
+                // SHOULD WE make asyncFunction also (to allow for require-async?)
 
                 // IMPORTANT: all AMD modules test for 'define.amd' being 'truthy'
                 //            but some (e.g. lodash) ALSO check that "typeof define.amd == 'object'" so...
@@ -159,10 +147,10 @@ export default async function loadModuleByUrl(moduleRequestUrl, dependent) {
 
                     Promise.all(deps).then(modules => {
                         try {
-                            resolvedModule(define(...modules.map(m => m.module)), 'AMD'); // could fail (if not [correct] AMD)
+                            moduleIsNowResolved(define(...modules.map(m => m.module)), 'AMD'); // could fail (if not [correct] AMD)
                         }
                         catch(err) {
-                            resolvedModule(err);
+                            moduleIsNowResolved(err);
                         }
                     });
                 }
@@ -178,7 +166,7 @@ export default async function loadModuleByUrl(moduleRequestUrl, dependent) {
                 }
                 catch(err) {
                     //logError('...' + moduleRequestUrl + ' failed to initialize as amd module', isAMD, err);
-                    if (isAMD) resolvedModule(err)
+                    if (isAMD) moduleIsNowResolved(err)
                 }
 
                 if (!isAMD) {
@@ -195,19 +183,19 @@ export default async function loadModuleByUrl(moduleRequestUrl, dependent) {
                         }
                         try {
                             await cjsInit(moduleProxy, moduleProxy.exports, requireProxy);
-                            resolvedModule(moduleProxy.exports, 'CommonJS');
+                            moduleIsNowResolved(moduleProxy.exports, 'CommonJS');
                         }
                         catch(err) {
-                            resolvedModule(err);
+                            moduleIsNowResolved(err);
                         }
                     }
                     else {
-                        resolvedModule(new Error('module seems to be neither AMD/UMD not CommonJS'));
+                        moduleIsNowResolved(new Error('module seems to be neither AMD/UMD not CommonJS'));
                     }
                 }
             }
             catch(err) {
-                resolvedModule(err);
+                moduleIsNowResolved(err);
             }
         }
     });
