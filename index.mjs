@@ -1,4 +1,4 @@
-// method used to actually download modules 
+// method used to actually download modules
 import { http as download} from './http-get'; 
 
 // prevent webpack/babel from removing async syntax (which neutralizes intended effect)
@@ -18,21 +18,11 @@ function basicActualUrl(requestedUrl) {
                                                      : requestedUrl; // relative path from here (where's here?)
 }
 
-// const settings = {
-//     actualUrl: basicActualUrl, // give callers control over final url
-//     //async download(url) { return http(url); }, // async method to download item: expect .data & .responseURL (in case of redirects)
-// };
-
 var resolveURL = basicActualUrl;
 loadModuleByUrl.setUrlResolver = customResolver => {
     resolveURL = customResolver || basicActualUrl; // so set to null to reset
     return loadModuleByUrl; // can chain op
 }
-
-// loadModuleByUrl.settings = options => {
-//     Object.assign(settings, options);
-//     return loadModuleByUrl; // chaining
-// }
 
 export const loadedModules = {};
 
@@ -54,14 +44,11 @@ async function requireAsync(url) {
     return requested.module; 
 }
 
-
 export default async function loadModuleByUrl(moduleRequestUrl, dependent) {
 
-    // loadModuleByUrl NEVER FAILS:
+    // IMPORTANT: loadModuleByUrl NEVER FAILS
     // - unloadable modules (e.g. network|syntax errors) simply set to undefined
     // - so reject (below) is NEVER used
-
-
 
     return new Promise(async resolve => { // NO 'reject' param as per above...
 
@@ -75,9 +62,10 @@ export default async function loadModuleByUrl(moduleRequestUrl, dependent) {
                 module.module = m; 
                 module.type = type;
             }
-            module.isLoaded = !module.err;
 
-            // then, resolve modules waiting on this one
+            module.isLoaded = !!module.module;
+
+            // first, resolve modules waiting on this one
             module.listeners.forEach(listener => listener(module));
 
             // then, resolve this one
@@ -85,7 +73,7 @@ export default async function loadModuleByUrl(moduleRequestUrl, dependent) {
         }
 
         if (module.isKnown) {
-            if (module.isLoaded)// !== undefined) 
+            if (module.isLoaded)
                 resolve(module); // modules are loaded once, then reused
             else {
                 if (dependent) {
@@ -106,21 +94,19 @@ export default async function loadModuleByUrl(moduleRequestUrl, dependent) {
                 isKnown: true,
                 dependents: dependent ? [ dependent ] : [],
                 listeners: [], // i.e. those waiting for this module to be loaded
-                moduleRequestUrl, // original
-                actualModuleUrl,
+                moduleRequestUrl, // original, as requested
+                actualModuleUrl, // as received, including possible redirects (301/302)
             });
 
             try {
                 const m = await download(actualModuleUrl);
-                //logInfo(`DOWNLOADED MODULE=${moduleRequestUrl}${(moduleRequestUrl === actualModuleUrl ? '' : ` [from ${actualModuleUrl}]`)}`, m);
 
                 const code = m.data; // may be AMD/UMD or CommonJS
 
                 // Favor AMD modules first because no need for code manipulation and many browser-based modules are AMD/UMD anyway
                 // - MUST pass dummy (i.e. undefined) module/exports/require else would use those from global context (if any)
-                const initModule = new Function('define', 'module', 'exports', 'require', code); 
-
-                // SHOULD WE make asyncFunction also (to allow for require-async?)
+                // - Use AsyncFunction in case module code uses async-require
+                const initModule = new AsyncFunction('define', 'module', 'exports', 'require', code); 
 
                 // IMPORTANT: all AMD modules test for 'define.amd' being 'truthy'
                 //            but some (e.g. lodash) ALSO check that "typeof define.amd == 'object'" so...
@@ -130,14 +116,13 @@ export default async function loadModuleByUrl(moduleRequestUrl, dependent) {
                 var isAMD = false; // ...because if not called, likely NOT an AMD module
                 function amdDefine(...args) {
                     isAMD = true; // yey!
-                    //logInfo('...' + moduleRequestUrl + ' is an AMD module');//, ...args);
 
                     const define = args.pop(); // always last param
                     if (typeof define !== 'function') 
                         throw new Error(`expecting 'define' to be a function - was ${typeof define}`);
 
                     const externals = args.pop() || [];
-                    //const name = args.pop(); // unused so commented out (here for ref)
+                    //const name_unused = args.pop(); // unused: here for ref
 
                     // resolve deps
                     const deps = externals.map(dep => loadModuleByUrl(dep, moduleRequestUrl));
@@ -152,17 +137,14 @@ export default async function loadModuleByUrl(moduleRequestUrl, dependent) {
                     });
                 }
 
-                try {
-                    // pass #1: try it as an AMD module
+                try { // pass #1: try it as an AMD module
                     let undefined_module, // unassigned === undefined
                         undefined_exports, // ditto
                         dummy_require = () => {throw new Error('require is invalid in AMD modules: ' + moduleRequestUrl);};
 
-                    initModule(amdDefine, undefined_module, undefined_exports, dummy_require);
-                    //logInfo('...' + moduleRequestUrl + ' successfully completed initialization', isAMD ? 'is an AMD module' : 'is NOT and amd module');
+                    await initModule(amdDefine, undefined_module, undefined_exports, dummy_require);
                 }
                 catch(err) {
-                    //logError('...' + moduleRequestUrl + ' failed to initialize as amd module', isAMD, err);
                     if (isAMD) moduleIsNowResolved(err)
                 }
 
@@ -171,8 +153,8 @@ export default async function loadModuleByUrl(moduleRequestUrl, dependent) {
                         
                         // pass #2: yes, less efficient (since 2 passes) but allows for both modes (i.e. amd/umd and cjs) to be imported
                         
-                        const newCode = cjsToAwaitRequire(code);
-                        const cjsInit = new AsyncFunction('module', 'exports', 'require', newCode);
+                        const awaitableCode = cjsToAwaitRequire(code);
+                        const cjsInit = new AsyncFunction('module', 'exports', 'require', awaitableCode);
                         const moduleProxy = { exports: {} };
                         async function requireProxy(modName) {
                             const upl = new URL(modName, m.responseURL).href; // todo: need better handling for this (e.g. absolute https://)
