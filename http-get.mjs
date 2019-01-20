@@ -1,8 +1,8 @@
 // a trivial replacement for axios.get (less code)
 
-// this code depends on XMLHttpRequest settings .responseURL field on completion
-// this is NOT SUPPORTED in IE (any versions)
-// so this code will NOT work on IE
+// this code depends on XMLHttpRequest settings .responseURL field upon completion
+// - that is NOT SUPPORTED in IE (any versions)
+// SO this code will NOT work on IE
 
 // read: https://gomakethings.com/promise-based-xhr/
 // also: https://gomakethings.com/why-i-still-use-xhr-instead-of-the-fetch-api/
@@ -36,8 +36,7 @@ export function http(url, {method = 'GET', retry = 3, retryDelayInMS = 500} = {}
                         .catch(reject);
                 }, retryDelayInMS); // ...after a brief delay...
                 retryDelayInMS *= 2; // ...and progressively increase it for next go around
-            } else { // 4xx errors or too many retries
-                log('REJECTING', url, request.statusText)
+            } else { // 4xx errors or too many retries (or other non-retriable error)
 				reject({
                     status: request.status,
                     statusText: request.statusText

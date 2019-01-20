@@ -29,9 +29,6 @@
   ],
   "author": "Frederic Rudman",
   "license": "ISC",
-  "dependencies": {
-    "axios": "^0.18.0"
-  },
   "devDependencies": {
     "webpack": "^4.28.4",
     "webpack-cli": "^3.2.1"

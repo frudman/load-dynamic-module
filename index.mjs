@@ -12,10 +12,11 @@ const cjsToAwaitRequire = cjs => cjs.replace(/\brequire\s*[(]/g, 'await require(
 const isCommonJS = code => /module[.]exports/.test(code); 
 
 // convert a dependancy reference to its http-gettable url
-function basicActualUrl(requestedUrl) {
-    return /^(https?[:])?[/][/]/i.test(requestedUrl) ? requestedUrl // explicit url so leave it alone
-                    : /^[a-z_$]/i.test(requestedUrl) ? `https://unpkg.com/${requestedUrl}` // simple name so use NPM (via unpkg)
-                                                     : requestedUrl; // relative path from here (where's here?)
+function basicActualUrl(requestedUrl, baseURL) {
+    if (/^(https?[:])?[/][/]/i.test(requestedUrl)) return requestedUrl; // explicit url so leave it alone
+    if (/^[a-z_$]/i.test(requestedUrl)) return `https://unpkg.com/${requestedUrl}`; // simple name so use NPM (via unpkg)
+
+    return baseURL ? new URL(requestedUrl, baseURL).href : requestedUrl; // relative path from here (where's here?)
 }
 
 var resolveURL = basicActualUrl;
@@ -44,15 +45,17 @@ async function requireAsync(url) {
     return requested.module; 
 }
 
-export default async function loadModuleByUrl(moduleRequestUrl, dependent) {
+export default async function loadModuleByUrl(moduleRequestUrl, askingUrl = window.location.href) {
 
     // IMPORTANT: loadModuleByUrl NEVER FAILS
     // - unloadable modules (e.g. network|syntax errors) simply set to undefined
     // - so reject (below) is NEVER used
 
+    const actualModuleUrl = resolveURL(moduleRequestUrl, askingUrl);
+
     return new Promise(async resolve => { // NO 'reject' param as per above...
 
-        const module = loadedModules[moduleRequestUrl] || (loadedModules[moduleRequestUrl] = { isKnown: false, module: undefined });
+        const module = loadedModules[actualModuleUrl] || (loadedModules[actualModuleUrl] = { isKnown: false, module: undefined });
 
         function moduleIsNowResolved(m, type) {
             if (arguments.length === 1) {
@@ -65,8 +68,6 @@ export default async function loadModuleByUrl(moduleRequestUrl, dependent) {
 
             module.isLoaded = !!module.module;
 
-            log('resolved module; #listeners=' + module.listeners.length + '; dependents: ' + (module.dependents || []).join(';'))
-
             // first, resolve modules waiting on this one
             module.listeners.forEach(listener => listener(module));
 
@@ -75,26 +76,26 @@ export default async function loadModuleByUrl(moduleRequestUrl, dependent) {
         }
 
         if (module.isKnown) {
-            if (module.isLoaded)
+            if (module.isLoaded || module.err) {
                 resolve(module); // modules are loaded once, then reused
+            }
             else {
-                if (dependent) {
-                    const cycle = module.dependents.find(m => m === dependent);
+                if (askingUrl) {
+                    const cycle = module.dependents.find(m => m === askingUrl);
                     if (cycle)
                         return moduleIsNowResolved(new Error('CYCLYCAL DEPENDENCY: ' + moduleRequestUrl + '<-->' + cycle));
                     else
-                        module.dependents.push(dependent);
+                        module.dependents.push(askingUrl);
                 }
 
                 module.listeners.push(resolvedModule => resolve(resolvedModule)); // ??? needs TESTING
             }
         }
         else { // loading a new module
-            const actualModuleUrl = resolveURL(moduleRequestUrl, basicActualUrl); // always make default available to custom resolvers
 
             Object.assign(module, {
                 isKnown: true,
-                dependents: dependent ? [ dependent ] : [],
+                dependents: [ askingUrl ],
                 listeners: [], // i.e. those waiting for this module to be loaded
                 moduleRequestUrl, // original, as requested
                 actualModuleUrl, // as received, including possible redirects (301/302)
@@ -102,7 +103,7 @@ export default async function loadModuleByUrl(moduleRequestUrl, dependent) {
 
             try {
                 const m = await download(actualModuleUrl);
-
+                const relURL = m.responseURL;
                 const code = m.data; // may be AMD/UMD or CommonJS
 
                 // Favor AMD modules first because no need for code manipulation and many browser-based modules are AMD/UMD anyway
@@ -127,7 +128,7 @@ export default async function loadModuleByUrl(moduleRequestUrl, dependent) {
                     //const name_unused = args.pop(); // unused: here for ref
 
                     // resolve deps
-                    const deps = externals.map(dep => loadModuleByUrl(dep, moduleRequestUrl));
+                    const deps = externals.map(dep => loadModuleByUrl(dep, relURL));
 
                     Promise.all(deps).then(modules => {
                         try {
@@ -147,21 +148,18 @@ export default async function loadModuleByUrl(moduleRequestUrl, dependent) {
                     await initModule(amdDefine, undefined_module, undefined_exports, dummy_require);
                 }
                 catch(err) {
-                    if (isAMD) moduleIsNowResolved(err)
+                    isAMD && moduleIsNowResolved(err); // if was an AMD, consider it resolved
                 }
 
                 if (!isAMD) {
                     if (isCommonJS(code)) { 
-                        
+
                         // pass #2: yes, less efficient (since 2 passes) but allows for both modes (i.e. amd/umd and cjs) to be imported
                         
                         const awaitableCode = cjsToAwaitRequire(code);
                         const cjsInit = new AsyncFunction('module', 'exports', 'require', awaitableCode);
                         const moduleProxy = { exports: {} };
-                        async function requireProxy(modName) {
-                            const upl = new URL(modName, m.responseURL).href; // todo: need better handling for this (e.g. absolute https://)
-                            return (await loadModuleByUrl(upl, moduleRequestUrl)).module;
-                        }
+                        const requireProxy = async modName => (await loadModuleByUrl(modName, relURL)).module;
                         try {
                             await cjsInit(moduleProxy, moduleProxy.exports, requireProxy);
                             moduleIsNowResolved(moduleProxy.exports, 'CommonJS');
@@ -176,7 +174,6 @@ export default async function loadModuleByUrl(moduleRequestUrl, dependent) {
                 }
             }
             catch(err) {
-                log('module NOT LOADABLE', err);
                 moduleIsNowResolved(err);
             }
         }
