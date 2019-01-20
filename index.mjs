@@ -65,6 +65,8 @@ export default async function loadModuleByUrl(moduleRequestUrl, dependent) {
 
             module.isLoaded = !!module.module;
 
+            log('resolved module; #listeners=' + module.listeners.length + '; dependents: ' + (module.dependents || []).join(';'))
+
             // first, resolve modules waiting on this one
             module.listeners.forEach(listener => listener(module));
 
@@ -174,6 +176,7 @@ export default async function loadModuleByUrl(moduleRequestUrl, dependent) {
                 }
             }
             catch(err) {
+                log('module NOT LOADABLE', err);
                 moduleIsNowResolved(err);
             }
         }
