@@ -9,7 +9,7 @@ const AsyncFunction = new Function(`return Object.getPrototypeOf(async function(
 const cjsToAwaitRequire = cjs => cjs.replace(/\brequire\s*[(]/g, 'await require(');
 
 // quick way to see if code is [likely] commonjs
-const isCommonJS = code => /module[.]exports/.test(code);
+const isCommonJS = code => /module[.]exports/.test(code); 
 
 // convert a dependancy reference to its http-gettable url
 function basicActualUrl(requestedUrl) {
