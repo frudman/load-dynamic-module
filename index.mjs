@@ -1,4 +1,4 @@
-// method used to actually download modules
+// method used to actually download modules 
 import { http as download} from './http-get'; 
 
 // prevent webpack/babel from removing async syntax (which neutralizes intended effect)
