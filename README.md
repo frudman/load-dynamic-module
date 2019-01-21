@@ -5,6 +5,7 @@ a browser-based loader that works with both AMD and CommonJS modules (with some 
     - **DO NOT USE**
 
 - [Currently at 1.5kB (minified & gzipped)](https://bundlephobia.com/result?p=load-dynamic-module@1.0.22)
+- ![check it out](https://badgen.net/bundlephobia/minzip/load-dynamic-module)
 - Allows for on-demand requires in AMD modules
 - Allows imports of CommonJS modules into browser
     - CAVEAT: cjs module can only have top-level requires. Nested requires (i.e. those within a function) 
