@@ -2,13 +2,8 @@
 // - to build libs: npm run build
 // - to run tests: npm run test
 // - don't forget to:
-//  - update package.json[.version]
-//  - then: npm publish
-
-// webpack strategy inspired from: https://tech.trivago.com/2015/12/17/export-multiple-javascript-module-formats/
-
-// todo: re-implement (?) using https://www.npmjs.com/package/parallel-webpack
-//       - same as below but done in parallel (and .variant() function already implemented)
+//  - npm update [regularly]
+//  - also: npm run pub [to publish new version]
 
 const { genCombinations } = require('tidbits');
 
