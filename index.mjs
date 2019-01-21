@@ -76,7 +76,7 @@ export default async function loadModuleByUrl(moduleRequestUrl, parentModuleUrl 
             // first
             if (arguments.length === 1) {
                 module.err = m;
-                // test err.message: e.g. from chrome: 'await is only valid in async function'
+                // test err.message (to give friendly hint): e.g. from chrome: 'await is only valid in async function'
                 if (m.name === 'SyntaxError' && /await.+async.+function/i.test(m.message || ''))
                     console.warn(`WARNING: module ${moduleRequestUrl} may be CommonJS with nested requires\n\t(only top-level requires are supported by loadModuleByUrl)`)
             }

@@ -4,6 +4,13 @@ a browser-based loader that works with both AMD and CommonJS modules (with some 
 - **NOT YET FULLY TESTED**
     - **DO NOT USE**
 
+- [Currently at 1.5kB (minified & gzipped)](https://bundlephobia.com/result?p=load-dynamic-module@1.0.22)
+- Allows for on-demand requires in AMD modules
+- Allows imports of CommonJS modules into browser
+    - CAVEAT: cjs module can only have top-level requires. Nested requires (i.e. those within a function) 
+      will not work (because that function would need to be made async, then any function using that function
+      would also need to be made async, and so on...)
+
 ## Some alternatives (though not complete as per our reqs): 
 - minimal REQUIRE implementation: https://eloquentjavascript.net/10_modules.html
 - http://stuk.github.io/require1k/

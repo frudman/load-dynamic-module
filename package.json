@@ -2,7 +2,8 @@
   "name": "load-dynamic-module",
   "version": "1.0.22",
   "description": "a browser-based loader for both AMD/UMD and CommonJS modules",
-  "main": "index.js",
+  "main": "index.mjs",
+  "module": "index.mjs",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "build": "rm -rf lib && webpack --config webpack.config.js",
