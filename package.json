@@ -35,6 +35,7 @@
   "author": "Frederic Rudman",
   "license": "ISC",
   "devDependencies": {
+    "tidbits": "^1.0.2",
     "webpack": "^4.28.4",
     "webpack-cli": "^3.2.1"
   }
