@@ -3,6 +3,8 @@
 // also: https://davidwalsh.name/javascript-loader
 // also: https://www.davidbcalhoun.com/2014/what-is-amd-commonjs-and-umd/
 
+// read: https://hackernoon.com/7-different-ways-to-use-es-modules-today-fc552254ebf4
+
 // method used to actually download modules
 import { http as download} from './http-get'; // instead of axios.get (lighter)
 
@@ -21,7 +23,7 @@ function defaultUrlResolver(requestedUrl, baseURL) {
     if (/^(https?[:])?[/][/]/i.test(requestedUrl)) 
         return requestedUrl; // explicit url so leave it alone
 
-    if (/^[a-z_$]/i.test(requestedUrl)) 
+    if (/^[a-z_$]/i.test(requestedUrl)) // a.k.a. a "bare import" in CJS parlance (i.e. /node_modules/...)
         return `https://unpkg.com/${requestedUrl}`; // simple name so use NPM (via unpkg)
 
     // based on: https://developer.mozilla.org/en-US/docs/Web/API/URL

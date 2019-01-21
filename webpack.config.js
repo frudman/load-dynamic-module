@@ -7,28 +7,10 @@
 
 // webpack strategy inspired from: https://tech.trivago.com/2015/12/17/export-multiple-javascript-module-formats/
 
-// todo: re-implement using https://www.npmjs.com/package/parallel-webpack
+// todo: re-implement (?) using https://www.npmjs.com/package/parallel-webpack
 //       - same as below but done in parallel (and .variant() function already implemented)
 
-const { deepClone, genCombinations } = require('tidbits');///lib/umd/es6');
-
-function genBuildConfiguration(baseConfig, opt) {
-    // start with base config
-    const config = deepClone(baseConfig); 
-
-    // customize it
-    //config.output.filename = `lib/${opt.target.lib}/es${opt.ecma}/index${opt.includeAxios ? '.withAxios' : ''}${opt.minimize?'.min':''}.js`;
-    config.output.filename = `lib/${opt.target.lib}/es${opt.ecma}/index${opt.minimize?'.min':''}.js`;
-    config.output.libraryTarget = opt.target.name; // amd, umd, commonjs, ...
-
-    //config.externals = opt.includeAxios ? {} : { axios:'axios' };
-
-    if (config.optimization.minimize = opt.minimize)
-        config.optimization.minimizer = [ minimizerConfig(opt.ecma) ];
-
-    // done
-    return config;
-}
+const { genCombinations } = require('tidbits');
 
 // "maintained" minimizer for webpack (from https://github.com/terser-js/terser)
 const TerserPlugin = require('terser-webpack-plugin');
@@ -53,30 +35,34 @@ const minimizerConfig = ecmaVersion => new TerserPlugin({
     },
 });
 
-const baseBuildConfig = {
-    mode: 'production',
-    entry: './index.mjs',
-    output: { 
-        path: __dirname, 
-    }, 
-    // externals: {
-    //     'axios': 'axios',
-    // },
-    optimization: {
-        minimize: false, // parms below will update this
-    },
-}
+const webpackConfig = opt => ({
+        mode: 'production',
+        entry: './index.mjs',
+        output: { 
+            path: __dirname, 
+            filename: `lib/${opt.target.lib}/es${opt.ecma}/index${opt.minimize?'.min':''}.js`,
+            libraryTarget: opt.target.name,
+
+            // // VERY IMPORTANT: globalObject as per below else 'window' will be used and this fails when
+            // // trying to import this module in a node app (e.g. another webpack config file)
+            // // - as per: https://github.com/webpack/webpack/issues/6525#issuecomment-417580843
+            // // - also: https://github.com/webpack/webpack/issues/6522#issuecomment-366708234
+            // globalObject: `typeof self !== 'undefined' ? self : this`, // replaces default of 'window' (for webpack 4)
+        }, 
+        optimization: {
+            minimize: opt.minimize,
+            minimizer: opt.minimize ? [ minimizerConfig(opt.ecma) ] : [],
+        },
+}); 
 
 const buildConfigurations = Array.from(genCombinations({
     target: [ 
         { lib: 'umd',  name: 'umd', },
         { lib: 'amd',  name: 'amd', },
-        { lib: 'cjs2', name: 'commonjs2', },
-        { lib: 'cjs',  name: 'commonjs', }
+        { lib: 'cjs', name: 'commonjs2', },
     ],
-    //includeAxios: [true, false],
     minimize: [ false, true ],
     ecma: [ 5, 6 ],//, 7, 8],
-})).map(options => genBuildConfiguration(baseBuildConfig, options));
+})).map(webpackConfig);
 
 module.exports = buildConfigurations;
