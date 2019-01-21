@@ -1,4 +1,6 @@
 // read: https://developers.google.com/web/fundamentals/primers/modules
+// also: https://curiosity-driven.org/minimal-loader
+// also: https://davidwalsh.name/javascript-loader
 
 // method used to actually download modules
 import { http as download} from './http-get'; // instead of axios.get (lighter)
