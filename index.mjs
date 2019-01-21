@@ -73,7 +73,7 @@ export default async function loadModuleByUrl(moduleRequestUrl, askingUrl = wind
                 module.err = m;
                 // err.name === 'SyntaxError'; err.message === 'await is only valid in async function'
                 if (m.name === 'SyntaxError' && /await.+valid.+async.+function/i.test(m.message || ''))
-                    console.warn('WARNING: module may be CommonJS with nested requires - (only top-level requires supported by loadModuleByUrl)')
+                    console.warn(`WARNING: module ${moduleRequestUrl} may be CommonJS with nested requires\n\t(only top-level requires are supported by loadModuleByUrl)`)
             }
             else {
                 module.module = m; 
