@@ -1,9 +1,16 @@
 // read: https://developers.google.com/web/fundamentals/primers/modules
+//  - https://developers.google.com/web/updates/2017/11/dynamic-import
+//  - https://www.sitepoint.com/using-es-modules/
 // also: https://curiosity-driven.org/minimal-loader
+// also: https://michelenasti.com/2018/10/02/let-s-write-a-simple-version-of-the-require-function.html
 // also: https://davidwalsh.name/javascript-loader
 // also: https://www.davidbcalhoun.com/2014/what-is-amd-commonjs-and-umd/
 
 // read: https://hackernoon.com/7-different-ways-to-use-es-modules-today-fc552254ebf4
+
+// dynamic import() not supported by most modern browsers (edge, firefox; only chrome and safari, as of jan 21, 2019):
+// - https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/import
+
 
 // method used to actually download modules
 import { http as download} from './http-get'; // instead of axios.get (lighter)
