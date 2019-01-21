@@ -58,14 +58,13 @@ async function requireAsync(url) {
     return requested.module; 
 }
 
-export default async function loadModuleByUrl(moduleRequestUrl, askingUrl = window.location.href) {
+export default async function loadModuleByUrl(moduleRequestUrl, parentModuleUrl = window.location.href) {
 
     // IMPORTANT: loadModuleByUrl NEVER FAILS, but/so:
     // - so unloadable modules (e.g. network|syntax errors) simply set to undefined (module.err contains reason)
     // - so reject (below) is NEVER used
 
-    const actualModuleUrl = urlResolver(moduleRequestUrl, askingUrl);
-    //const dispmod = moduleRequestUrl === actualModuleUrl ? `mod=${moduleRequestUrl}` : `mod=${moduleRequestUrl}; url=${actualModuleUrl}`;
+    const actualModuleUrl = urlResolver(moduleRequestUrl, parentModuleUrl);
 
     return new Promise(async resolve => { // NO 'reject' param as per above...
 
@@ -75,8 +74,8 @@ export default async function loadModuleByUrl(moduleRequestUrl, askingUrl = wind
             // first
             if (arguments.length === 1) {
                 module.err = m;
-                // err.name === 'SyntaxError'; err.message === 'await is only valid in async function'
-                if (m.name === 'SyntaxError' && /await.+valid.+async.+function/i.test(m.message || ''))
+                // test err.message: e.g. from chrome: 'await is only valid in async function'
+                if (m.name === 'SyntaxError' && /await.+async.+function/i.test(m.message || ''))
                     console.warn(`WARNING: module ${moduleRequestUrl} may be CommonJS with nested requires\n\t(only top-level requires are supported by loadModuleByUrl)`)
             }
             else {
@@ -99,12 +98,12 @@ export default async function loadModuleByUrl(moduleRequestUrl, askingUrl = wind
                 resolve(module); // modules are loaded once, then reused
             }
             else {
-                if (askingUrl) {
-                    const cycle = module.dependents.find(m => m === askingUrl);
+                if (parentModuleUrl) {
+                    const cycle = module.dependents.find(m => m === parentModuleUrl);
                     if (cycle)
                         return moduleIsNowResolved(new Error('CYCLYCAL DEPENDENCY: ' + moduleRequestUrl + '<-->' + cycle));
                     else
-                        module.dependents.push(askingUrl);
+                        module.dependents.push(parentModuleUrl);
                 }
 
                 module.listeners.push(resolvedModule => resolve(resolvedModule)); // ??? needs TESTING
@@ -114,7 +113,7 @@ export default async function loadModuleByUrl(moduleRequestUrl, askingUrl = wind
 
             Object.assign(module, {
                 isKnown: true,
-                dependents: [ askingUrl ],
+                dependents: [ parentModuleUrl ],
                 listeners: [], // i.e. those waiting for this module to be loaded
                 moduleRequestUrl, // original, as requested
                 actualModuleUrl, // as received, including possible redirects (301/302)
