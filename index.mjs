@@ -47,9 +47,11 @@ loadModuleByUrl.setUrlResolver = customResolver => {
 export const loadedModules = {};
 
 // allow for pre-loaded modules to be referenced
-loadedModules.addKnownModule = addKnownModule;
+//loadedModules.addKnownModule = addKnownModule;
+loadModuleByUrl.addKnownModule = addKnownModule;
 function addKnownModule(name, module) {
-    loadedModules[name] = {
+    //loadedModules[name] = {
+    loadedModules[urlResolver(name)] = { // must store name as it would be resolved: BUT, what if resolver is changed AFTERwards???
         isKnown: true,
         isLoaded: true,
         type: 'isBuiltin',
