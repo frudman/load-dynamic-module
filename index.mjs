@@ -50,6 +50,7 @@ export const loadedModules = {};
 //loadedModules.addKnownModule = addKnownModule;
 loadModuleByUrl.addKnownModule = addKnownModule;
 function addKnownModule(name, module) {
+    console.log('adding known module', name, module);
     //loadedModules[name] = {
     loadedModules[urlResolver(name)] = { // must store name as it would be resolved: BUT, what if resolver is changed AFTERwards???
         isKnown: true,
@@ -67,6 +68,16 @@ addKnownModule('async-require', requireAsync); // alias
 async function requireAsync(url) {
     const requested = await loadModuleByUrl(url);
     return requested.module; 
+}
+
+const amdAliases = {
+    'global': () => ({ axc: 123, hello: 'bye' }),
+};
+export function registerDefineForAMD(name, generatingFcn) {
+
+    // MUST DOCUMENT: this allows for GLOBALS to be defined ahead of module initialialization
+
+    amdAliases[name] = generatingFcn;
 }
 
 export default async function loadModuleByUrl(moduleRequestUrl, parentModuleUrl = window.location.href) {
@@ -130,15 +141,42 @@ export default async function loadModuleByUrl(moduleRequestUrl, parentModuleUrl 
                 actualModuleUrl, // as received, including possible redirects (301/302)
             });
 
+            // const xx = {
+            //     stashYourBitsPlugin() {
+            //         console.log('INSIDE stasjing your bits Plugin INIT');
+            //         // must somehow let us know that this was called... 
+            //         // so we know it worked as a pseudo-amd module
+            //     }
+            // }
+
             try {
                 const m = await download(actualModuleUrl);
                 const baseUrlForSubDeps = m.responseURL; // any deps in this module are relative to this base url
                 const code = m.data; // may be AMD/UMD or CommonJS
 
+                const ee = { keys: [], actual: [], }; // proxied_globals
+                Object.entries(amdAliases).forEach(([aliasName,genFcn]) => {
+                    ee.keys.push(aliasName);
+                    ee.actual.push(genFcn(amdDefine));//, ...otherGlobals));//genFcn(amdDefine)); // pass base function
+
+                    // OR PASS 2 extras: AMD_DEFINE (which can be used as SUPER) --- BUT ALREADY PASSED!!! as 'define'!!!
+                    //                   isAmd; function(?) call to say YES; or variable to set
+
+                })
+                log('additional GLOBALS', ee); // but CANNOT take place of define else how do we know it worked?
+               
+                // const xx = {
+                // };
+                // Object.entries(xx).forEach(([parmName,parmValue]) => {
+                //     ee.keys.push(parmName);
+                //     ee.actual.push(parmValue);
+                // })
+
                 // Try as AMD module first because 1) many browser-based modules are AMD/UMD anyway and 2) no need for code manipulation
                 // - MUST pass dummy (i.e. undefined) module/exports/require else would use those from global context (if any)
                 // - Use AsyncFunction in case module code uses async-require
-                const initModule = new AsyncFunction('define', 'module', 'exports', 'require', code); 
+                const initModule = new AsyncFunction('define', 'module', 'exports', 'require', ...ee.keys, code); 
+                //console.log('INIT-MODULE', initModule);
 
                 // IMPORTANT: all AMD modules test for 'define.amd' being 'truthy'
                 //            but some (e.g. lodash) ALSO check that "typeof define.amd == 'object'" so...
@@ -153,8 +191,48 @@ export default async function loadModuleByUrl(moduleRequestUrl, parentModuleUrl 
                     if (typeof moduleDefine !== 'function') 
                         throw new Error(`expecting 'define' to be a function (was ${typeof moduleDefine})`);
 
-                    const externals = args.pop() || [];
-                    //const name_unused = args.pop(); // unused: here for ref
+                    // find out how many deps the define function expects
+                    const numDeps = moduleDefine.length; // function.length returns how many parms (so, deps) are declared for it
+
+                    // we allow for either an array of deps (traditional) or just comma-separated parms (for convenience when creating module manually)
+                    // if mixture of strings and arrays (of strings only), we're ok with that, though not clear why that would be the case
+                    // and we always work backwards on parms (from right to left) to allow for possibility of a module name at the front/left
+                    // (as per traditional, in case first/leftmost parm is module's 'name', as per typical AMD define(name,[...deps], fcn(...depRefs){}))
+                    // IF a module is specified, it remains UNUSED (not needed for modules loaded by URLs)
+                    // POSSIBLE: if single string parm left (i.e. module name), maybe register it as the module's name also: i.e. an alias
+                    // - but what happens if another module wants that name: overwrite? remove both? keep first? keep both?
+                    const externals = [];
+                    while(externals.length < numDeps) {
+                        const nextDep = args.pop(); // from right/back to left/front 
+                        if (typeof nextDep === 'string')
+                            externals.unshift(nextDep); // add to front/left of array
+                        else if (Array.isArray(nextDep)) {
+                            while (externals.length < numDeps && nextDep.length > 0) { // process nested deps
+                                const nd = nextDep.pop(); // take last one (so going from back to front)...
+                                if (typeof nd === 'string')
+                                    externals.unshift(nd); // add to front of array
+                                else 
+                                    throw new Error(`invalid AMD module definition - bad dependency - can only be of type string (got type=${typeof nd})`);
+                            }
+                        }
+                        else 
+                            throw new Error(`invalid AMD module definition - bad dependency - can only be of type string or a simple array of strings`);
+                    }
+
+                    // separate option in case of conflicts: replace, remove both, keep first (e.g. different url but same name)
+
+                    if (args.length === 1 && typeof args[0] === 'string') {
+                        // this is the module's name (as author wants it defined)
+                        // use it? 
+                        // maybe set option to use only URLs, URLs AND named defines, or just named defines (if no name, use url)
+                    }
+
+                    // const externals = args.pop() || [];
+                    // //const name_unused = args.pop(); // unused: here for ref
+                    // const name = args.pop(); // unused: here for ref
+
+                    log('IN AMD-DEFINE', moduleRequestUrl, externals, externals.length === moduleDefine.length);//, moduleDefine);
+
 
                     // resolve deps
                     const deps = externals.map(dep => loadModuleByUrl(dep, baseUrlForSubDeps));
@@ -177,9 +255,17 @@ export default async function loadModuleByUrl(moduleRequestUrl, parentModuleUrl 
                         undefined_exports, // ditto
                         dummy_require = () => {throw new Error('require is invalid in AMD modules (use require-async instead): ' + moduleRequestUrl);};
 
-                    await initModule(amdDefine, undefined_module, undefined_exports, dummy_require);
+                        initModule.bind({
+                            APOTaz: 'erertyert',
+                            define(){},
+                        });
+                    await initModule(amdDefine, undefined_module, undefined_exports, dummy_require, ...ee.actual);
                 }
                 catch(err) {
+
+                    // or test if another method was called...
+                    log('AMD Failure', isAMD, err);
+
                     isAMD && moduleIsNowResolved(err); // if was an AMD, consider it resolved (though with errors)
                 }
 
@@ -188,6 +274,8 @@ export default async function loadModuleByUrl(moduleRequestUrl, parentModuleUrl 
 
                         // pass #2: yes, less efficient (since 2 passes) but allows for both modes (i.e. amd/umd and cjs) to be imported
                         // BIG CAVEAT: only top-level requires will be honored; nested requires (i.e. within non-asyn functions) will fail
+
+                        // TODO: ALSO add GLOBAL parms???
                         
                         const awaitableCode = commonjsToAwaitRequire(code);
                         const commonjsInit = new AsyncFunction('module', 'exports', 'require', awaitableCode);
@@ -195,9 +283,11 @@ export default async function loadModuleByUrl(moduleRequestUrl, parentModuleUrl 
                         const requireProxy = async modName => (await loadModuleByUrl(modName, baseUrlForSubDeps)).module;
                         try {
                             await commonjsInit(moduleProxy, moduleProxy.exports, requireProxy);
+                            log('OKx', moduleRequestUrl, moduleProxy.exports);
                             moduleIsNowResolved(moduleProxy.exports, 'CommonJS');
                         }
                         catch(err) {
+                            log('whoops', moduleRequestUrl, err);
                             moduleIsNowResolved(err);
                         }
                     }
