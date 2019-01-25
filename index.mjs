@@ -96,7 +96,7 @@ export default async function loadModule(moduleRequestUrl, parentModuleUrl = win
             // first
             if (arguments.length === 1) {
                 const err = module.err = m;
-                const name = `dynamic module ${moduleRequestUrl} (actualModuleUrl)`;
+                const name = `dynamic module ${moduleRequestUrl} (${actualModuleUrl})`;
                 // test 'err.message' (to give friendly hint): e.g. from chrome: 'await is only valid in async function'
                 if (err.name === 'SyntaxError' && /await.+async.+function/i.test(err.message || ''))
                     console.warn(`${name} may be CommonJS with nested requires\n\t(only top-level requires are supported by loadModule)`)
