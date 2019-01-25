@@ -8,7 +8,7 @@
 
 // read: https://hackernoon.com/7-different-ways-to-use-es-modules-today-fc552254ebf4
 
-// dynamic import() not supported by most modern browsers (edge, firefox; only chrome and safari, as of jan 21, 2019):
+// dynamic import() NOT SUPPORTED by most modern browsers (as of jan 21, 2019: edge:no, firefox:no, chrome:yes, safari:yes)
 // - https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/import
 
 
@@ -37,68 +37,70 @@ function defaultUrlResolver(requestedUrl, baseURL) {
     return baseURL ? new URL(requestedUrl, baseURL).href : requestedUrl;
 }
 
-var urlResolver = defaultUrlResolver;
-loadModuleByUrl.setUrlResolver = customResolver => {
-    urlResolver = customResolver || defaultUrlResolver; // so set to null to reset
-    return loadModuleByUrl; // can chain op
+var resolveUrl = defaultUrlResolver;
+export function setCustomUrlResolver(customResolver) {
+    // - can set customResolver to null to reset
+    // - customResolver expects 3 parms: url, baseUrl, defaultUrlResolverFunction
+    resolveUrl = customResolver || defaultUrlResolver; 
 }
 
-// let loaded modules be visible to all (any benefits to that?)
-export const loadedModules = {};
+const loadedModules = {};
 
 // allow for pre-loaded modules to be referenced
-//loadedModules.addKnownModule = addKnownModule;
-loadModuleByUrl.addKnownModule = addKnownModule;
-function addKnownModule(name, module) {
-    console.log('adding known module', name, module);
-    //loadedModules[name] = {
-    loadedModules[urlResolver(name)] = { // must store name as it would be resolved: BUT, what if resolver is changed AFTERwards???
+export function addKnownModule(name, module) {
+    // must store name as it would be resolved
+    // issue: what happens if urlResolver is changed after the facts?
+    loadedModules[resolveUrl(name)] = { 
         isKnown: true,
         isLoaded: true,
         type: 'isBuiltin',
         module,
     };
-    return loadedModules;
 }
 
-addKnownModule('load-dynamic-module', loadModuleByUrl); // trivial case
+addKnownModule('load-dynamic-module', loadModule); // self: trivial case
 addKnownModule('require-async', requireAsync); // lets AMD modules load deps on-demand
 addKnownModule('async-require', requireAsync); // alias
 
 async function requireAsync(url) {
-    const requested = await loadModuleByUrl(url);
+    const requested = await loadModule(url);
     return requested.module; 
 }
 
-const amdAliases = {
-    'global': () => ({ axc: 123, hello: 'bye' }),
-};
-export function registerDefineForAMD(name, generatingFcn) {
+const globalAliases = {};
+export function genModuleGlobal(name, generatingFcn) {
 
-    // MUST DOCUMENT: this allows for GLOBALS to be defined ahead of module initialialization
+    // MUST DOCUMENT: this allows for GLOBALS to be defined ahead of a module's initialialization
+    // to document: must be a generating function so that base 'define' is available
 
-    amdAliases[name] = generatingFcn;
+    // IMPORTANT: generatingFcn CAN change underlying define, module.exports, require if it wants
+    //            because these are passed as fields in an object, then those fields are passed
+    //            module context. 
+
+    globalAliases[name] = generatingFcn;
 }
 
-export default async function loadModuleByUrl(moduleRequestUrl, parentModuleUrl = window.location.href) {
+export default async function loadModule(moduleRequestUrl, parentModuleUrl = window.location.href) {
 
     // IMPORTANT: loadModuleByUrl NEVER FAILS, but/so:
     // - so unloadable modules (e.g. network|syntax errors) simply set to undefined (module.err contains reason)
-    // - so reject (below) is NEVER used
+    // - so reject clause (of Promise below) is NEVER used
 
-    const actualModuleUrl = urlResolver(moduleRequestUrl, parentModuleUrl);
+    const actualModuleUrl = resolveUrl(moduleRequestUrl, parentModuleUrl, defaultUrlResolver);
 
-    return new Promise(async resolve => { // NO 'reject' param as per above...
+    return new Promise(async resolve => { // NO 'reject' param/clause as per note above...
 
         const module = loadedModules[actualModuleUrl] || (loadedModules[actualModuleUrl] = { isKnown: false, module: undefined });
 
         function moduleIsNowResolved(m, type) {
             // first
             if (arguments.length === 1) {
-                module.err = m;
-                // test err.message (to give friendly hint): e.g. from chrome: 'await is only valid in async function'
-                if (m.name === 'SyntaxError' && /await.+async.+function/i.test(m.message || ''))
+                const err = module.err = m;
+                // test 'err.message' (to give friendly hint): e.g. from chrome: 'await is only valid in async function'
+                if (err.name === 'SyntaxError' && /await.+async.+function/i.test(err.message || ''))
                     console.warn(`WARNING: module ${moduleRequestUrl} may be CommonJS with nested requires\n\t(only top-level requires are supported by loadModuleByUrl)`)
+                else
+                    console.error(`module failed to load`, moduleRequestUrl, actualModuleUrl, err);
             }
             else {
                 module.module = m; 
@@ -141,42 +143,35 @@ export default async function loadModuleByUrl(moduleRequestUrl, parentModuleUrl 
                 actualModuleUrl, // as received, including possible redirects (301/302)
             });
 
-            // const xx = {
-            //     stashYourBitsPlugin() {
-            //         console.log('INSIDE stasjing your bits Plugin INIT');
-            //         // must somehow let us know that this was called... 
-            //         // so we know it worked as a pseudo-amd module
-            //     }
-            // }
-
             try {
                 const m = await download(actualModuleUrl);
                 const baseUrlForSubDeps = m.responseURL; // any deps in this module are relative to this base url
                 const code = m.data; // may be AMD/UMD or CommonJS
 
-                const ee = { keys: [], actual: [], }; // proxied_globals
-                Object.entries(amdAliases).forEach(([aliasName,genFcn]) => {
-                    ee.keys.push(aliasName);
-                    ee.actual.push(genFcn(amdDefine));//, ...otherGlobals));//genFcn(amdDefine)); // pass base function
+                const amdProxy = { // for amd modules
+                    define: amdDefine,
+                    module: undefined,
+                    require: () => {throw new Error('require is invalid in AMD modules (use require-async instead): ' + moduleRequestUrl);},
+                };
 
-                    // OR PASS 2 extras: AMD_DEFINE (which can be used as SUPER) --- BUT ALREADY PASSED!!! as 'define'!!!
-                    //                   isAmd; function(?) call to say YES; or variable to set
+                const cjsProxy = { // for commonjs modules
+                    define: () => { throw new Error('unexpected use of DEFINE in commonJS module')},
+                    module: { exports: {} },
+                    require: async modName => (await loadModule(modName, baseUrlForSubDeps)).module,
+                }
 
+                const proxiedGlobals = { names: [], values: [], };
+                Object.entries(globalAliases).forEach(([name,genFcn]) => {
+                    proxiedGlobals.names.push(name);
+                    proxiedGlobals.values.push(genFcn(amdProxy, cjsProxy)); // passed as objects so callers can change default values
                 })
-                log('additional GLOBALS', ee); // but CANNOT take place of define else how do we know it worked?
                
-                // const xx = {
-                // };
-                // Object.entries(xx).forEach(([parmName,parmValue]) => {
-                //     ee.keys.push(parmName);
-                //     ee.actual.push(parmValue);
-                // })
-
                 // Try as AMD module first because 1) many browser-based modules are AMD/UMD anyway and 2) no need for code manipulation
-                // - MUST pass dummy (i.e. undefined) module/exports/require else would use those from global context (if any)
+                // - MUST pass dummy module/exports/require else would use/fallback those from global context (i.e. window) if any
                 // - Use AsyncFunction in case module code uses async-require
-                const initModule = new AsyncFunction('define', 'module', 'exports', 'require', ...ee.keys, code); 
-                //console.log('INIT-MODULE', initModule);
+                // - could initModule.bind(x) but this would change meaning of 'this' within module: default is global/window object
+                //    - this could be a means to protect the window object if needed (e.g. by replacing it with null, or a proxying object)
+                const initModule = new AsyncFunction('define', 'module', 'exports', 'require', ...proxiedGlobals.names, code); 
 
                 // IMPORTANT: all AMD modules test for 'define.amd' being 'truthy'
                 //            but some (e.g. lodash) ALSO check that "typeof define.amd == 'object'" so...
@@ -194,11 +189,11 @@ export default async function loadModuleByUrl(moduleRequestUrl, parentModuleUrl 
                     // find out how many deps the define function expects
                     const numDeps = moduleDefine.length; // function.length returns how many parms (so, deps) are declared for it
 
-                    // we allow for either an array of deps (traditional) or just comma-separated parms (for convenience when creating module manually)
-                    // if mixture of strings and arrays (of strings only), we're ok with that, though not clear why that would be the case
+                    // we allow for either an array of deps (traditional) or just comma-separated parms (for convenience when creating amd modules manually)
+                    // we're ok with a mixture of strings and arrays (of strings only), though not clear why that would be the case
                     // and we always work backwards on parms (from right to left) to allow for possibility of a module name at the front/left
-                    // (as per traditional, in case first/leftmost parm is module's 'name', as per typical AMD define(name,[...deps], fcn(...depRefs){}))
-                    // IF a module is specified, it remains UNUSED (not needed for modules loaded by URLs)
+                    // (as per traditional, in case first/leftmost parm is module's 'name', as per typical AMD define([name,][...deps,] fcn(...depRefs){}))
+                    // IF a module name is specified, it remains UNUSED (not needed for modules loaded by URLs)
                     // POSSIBLE: if single string parm left (i.e. module name), maybe register it as the module's name also: i.e. an alias
                     // - but what happens if another module wants that name: overwrite? remove both? keep first? keep both?
                     const externals = [];
@@ -212,30 +207,23 @@ export default async function loadModuleByUrl(moduleRequestUrl, parentModuleUrl 
                                 if (typeof nd === 'string')
                                     externals.unshift(nd); // add to front of array
                                 else 
-                                    throw new Error(`invalid AMD module definition - bad dependency - can only be of type string (got type=${typeof nd})`);
+                                    throw new Error(`invalid dependency in AMD module definition - can only be a string (got type=${typeof nd})`);
                             }
                         }
                         else 
-                            throw new Error(`invalid AMD module definition - bad dependency - can only be of type string or a simple array of strings`);
+                            throw new Error(`invalid dependency in AMD module definition - can only be a string or an array of strings`);
                     }
 
-                    // separate option in case of conflicts: replace, remove both, keep first (e.g. different url but same name)
 
-                    if (args.length === 1 && typeof args[0] === 'string') {
-                        // this is the module's name (as author wants it defined)
-                        // use it? 
-                        // maybe set option to use only URLs, URLs AND named defines, or just named defines (if no name, use url)
-                    }
-
-                    // const externals = args.pop() || [];
-                    // //const name_unused = args.pop(); // unused: here for ref
-                    // const name = args.pop(); // unused: here for ref
-
-                    log('IN AMD-DEFINE', moduleRequestUrl, externals, externals.length === moduleDefine.length);//, moduleDefine);
-
+                    // if (args.length === 1 && typeof args[0] === 'string') {
+                    //     // this is the module's name (as author wants it defined)
+                    //     // use it? 
+                    //     // maybe set option to use only URLs, URLs AND named defines, or just named defines (if no name, use url)
+                    //     // to consider: add option in case of conflicts: replace with newer/last-loaded, remove both, keep first (e.g. different url but same name)
+                    // }
 
                     // resolve deps
-                    const deps = externals.map(dep => loadModuleByUrl(dep, baseUrlForSubDeps));
+                    const deps = externals.map(dep => loadModule(dep, baseUrlForSubDeps));
 
                     Promise.all(deps).then(modules => {
                         try {
@@ -248,46 +236,25 @@ export default async function loadModuleByUrl(moduleRequestUrl, parentModuleUrl 
                 }
 
                 try { 
-                    
                     // pass #1: try it as an AMD module first
-
-                    let undefined_module, // unassigned === undefined
-                        undefined_exports, // ditto
-                        dummy_require = () => {throw new Error('require is invalid in AMD modules (use require-async instead): ' + moduleRequestUrl);};
-
-                        initModule.bind({
-                            APOTaz: 'erertyert',
-                            define(){},
-                        });
-                    await initModule(amdDefine, undefined_module, undefined_exports, dummy_require, ...ee.actual);
+                    await initModule(amdProxy.define, amdProxy.module, (amdProxy.module || {}).exports, amdProxy.require, ...proxiedGlobals.values);
                 }
                 catch(err) {
-
-                    // or test if another method was called...
-                    log('AMD Failure', isAMD, err);
-
                     isAMD && moduleIsNowResolved(err); // if was an AMD, consider it resolved (though with errors)
                 }
 
                 if (!isAMD) {
                     if (isCommonJS(code)) { 
-
                         // pass #2: yes, less efficient (since 2 passes) but allows for both modes (i.e. amd/umd and cjs) to be imported
                         // BIG CAVEAT: only top-level requires will be honored; nested requires (i.e. within non-asyn functions) will fail
-
-                        // TODO: ALSO add GLOBAL parms???
                         
                         const awaitableCode = commonjsToAwaitRequire(code);
-                        const commonjsInit = new AsyncFunction('module', 'exports', 'require', awaitableCode);
-                        const moduleProxy = { exports: {} };
-                        const requireProxy = async modName => (await loadModuleByUrl(modName, baseUrlForSubDeps)).module;
+                        const commonjsInit = new AsyncFunction('module', 'exports', 'require', ...proxiedGlobals.names, awaitableCode);
                         try {
-                            await commonjsInit(moduleProxy, moduleProxy.exports, requireProxy);
-                            log('OKx', moduleRequestUrl, moduleProxy.exports);
-                            moduleIsNowResolved(moduleProxy.exports, 'CommonJS');
+                            await commonjsInit(cjsProxy.module, (cjsProxy.module || {}).exports, cjsProxy.require, ...proxiedGlobals.values);
+                            moduleIsNowResolved((cjsProxy.module||{}).exports, 'CommonJS');
                         }
                         catch(err) {
-                            log('whoops', moduleRequestUrl, err);
                             moduleIsNowResolved(err);
                         }
                     }
