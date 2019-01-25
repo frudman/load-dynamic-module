@@ -96,11 +96,12 @@ export default async function loadModule(moduleRequestUrl, parentModuleUrl = win
             // first
             if (arguments.length === 1) {
                 const err = module.err = m;
+                const name = `dynamic module ${moduleRequestUrl} (actualModuleUrl)`;
                 // test 'err.message' (to give friendly hint): e.g. from chrome: 'await is only valid in async function'
                 if (err.name === 'SyntaxError' && /await.+async.+function/i.test(err.message || ''))
-                    console.warn(`WARNING: module ${moduleRequestUrl} may be CommonJS with nested requires\n\t(only top-level requires are supported by loadModuleByUrl)`)
+                    console.warn(`${name} may be CommonJS with nested requires\n\t(only top-level requires are supported by loadModule)`)
                 else
-                    console.error(`module failed to load`, moduleRequestUrl, actualModuleUrl, err);
+                    console.error(`${name} failed to be loaded`, err);
             }
             else {
                 module.module = m; 
@@ -215,8 +216,8 @@ export default async function loadModule(moduleRequestUrl, parentModuleUrl = win
                     }
 
 
-                    // if (args.length === 1 && typeof args[0] === 'string') {
-                    //     // this is the module's name (as author wants it defined)
+                    // this is the module's name (as author wants it defined)
+                    // if (args.length === 1 && typeof args[0] === 'string') { ...UNUSED for now...
                     //     // use it? 
                     //     // maybe set option to use only URLs, URLs AND named defines, or just named defines (if no name, use url)
                     //     // to consider: add option in case of conflicts: replace with newer/last-loaded, remove both, keep first (e.g. different url but same name)
