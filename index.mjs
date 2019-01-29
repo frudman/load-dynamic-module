@@ -20,6 +20,8 @@ import { http as download} from './http-get'; // instead of axios.get (lighter)
 const AsyncFunction = new Function(`return Object.getPrototypeOf(async function(){}).constructor`)();
 
 // convert commonjs 'require' (implicit sync) to 'await require' (explicit sync)
+// will only work for top-level requires since nested requires (i.e. within a function) will fail with syntax error
+// (unless function itself was marked async)
 const commonjsToAwaitRequire = cjs => cjs.replace(/\brequire\s*[(]/g, 'await require(');
 
 // quick way to see if code might be commonjs
@@ -37,112 +39,147 @@ function defaultUrlResolver(requestedUrl, baseURL) {
     return baseURL ? new URL(requestedUrl, baseURL).href : requestedUrl;
 }
 
-var resolveUrl = defaultUrlResolver;
-export function setCustomUrlResolver(customResolver) {
-    // - can set customResolver to null to reset
-    // - customResolver expects 3 parms: url, baseUrl, defaultUrlResolverFunction
-    resolveUrl = customResolver || defaultUrlResolver; 
-}
-
+// our module cache
 const loadedModules = {};
 
 // allow for pre-loaded modules to be referenced
-export function addKnownModule(name, module) {
-    // must store name as it would be resolved
-    // issue: what happens if urlResolver is changed after the facts?
-    loadedModules[resolveUrl(name)] = { 
-        isKnown: true,
-        isLoaded: true,
-        type: 'isBuiltin',
-        module,
-    };
+export function addKnownModule(name, module, resolveUrl = defaultUrlResolver) {
+    // store name as it would be resolved so if different relative URLS point to same module,
+    // that module is loaded only once
+    loadedModules[resolveUrl(name)] = new Module({type: 'builtin', module});
+    //  { 
+    //     isLoaded: true,
+    //     type: 'isBuiltin',
+    //     module,
+    // };
 }
 
 addKnownModule('load-dynamic-module', loadModule); // self: trivial case
-addKnownModule('require-async', requireAsync); // lets AMD modules load deps on-demand
-addKnownModule('async-require', requireAsync); // alias
 
-async function requireAsync(url) {
-    const requested = await loadModule(url);
+// a gimme global (for later on)
+async function requireAsync(url, {baseUrl = window.location.href, globals = ()=>{}, urlResolver = defaultUrlResolver} = {}) {
+    const requested = await loadModule(url, {baseUrl, globals, urlResolver});
     return requested.module; 
 }
 
-const globalAliases = {};
-export function genModuleGlobal(name, generatingFcn) {
+// MUST DOCUMENT: this allows for GLOBALS to be defined ahead of a module's initialialization
+// to document: must be a generating function so that base 'define' is available
 
-    // MUST DOCUMENT: this allows for GLOBALS to be defined ahead of a module's initialialization
-    // to document: must be a generating function so that base 'define' is available
+class Module {
+    constructor({type, module, baseUrl} = {}) {
+        this.type = type;
+        this.module = module;
+        this.baseUrl = baseUrl;
+        //this.resolve = resolve;
+    }
 
-    // IMPORTANT: generatingFcn CAN change underlying define, module.exports, require if it wants
-    //            because these are passed as fields in an object, then those fields are passed
-    //            module context. 
+    get isLoaded() { return this.module || this.err; }
+    get isUnresolved() { return !!this.resolve; }
 
-    globalAliases[name] = generatingFcn;
+    resolveOK(type, m) {
+        this.module = m; 
+        this.type = type;
+        this.nowResolved();
+    }
+
+    nowResolved() {
+        // let dependents know
+        this.listeners.forEach(listener => listener(this));
+        delete this.listeners;
+
+        // finally
+        this.resolve(this);
+        delete this.resolve;
+    }
+
+    resolveWithError(err) {
+        this.err = err;
+        const name = `dynamic module ${moduleRequestUrl} (${actualModuleUrl})`;
+        // now, test 'err.message' to give friendly hint: e.g. from chrome: 'await is only valid in async function'
+        if (err.name === 'SyntaxError' && /await.+async.+function/i.test(err.message || ''))
+            console.warn(`${name} may be CommonJS with nested requires\n\t(only top-level requires are supported by loadModule)`)
+        else
+            console.error(`${name} failed to be loaded`, err);
+
+        this.nowResolved();
+    }
+
+    addDependent(dependentUrl, dependentResolve) {
+        if (baseUrl) {
+            const cycle = module.dependents.find(m => m === baseUrl);
+            if (cycle)
+                return moduleIsNowResolved(new Error('CYCLYCAL DEPENDENCY: ' + moduleRequestUrl + '<-->' + cycle));
+            else
+                module.dependents.push(baseUrl);
+        }
+
+        module.listeners.push(resolvedModule => resolve(resolvedModule)); // ??? needs TESTING
+
+    }
 }
 
-export default async function loadModule(moduleRequestUrl, parentModuleUrl = window.location.href) {
+
+
+
+export default async function loadModule(moduleRequestUrl, {baseUrl = window.location.href, globals = ()=>{}, urlResolver = defaultUrlResolver} = {}) {
+
+    // baseUrl in case some of its deps are relative-urls
+    // - also in case it has deps: request+base becomes object that we wait upon
 
     // IMPORTANT: loadModuleByUrl NEVER FAILS, but/so:
     // - so unloadable modules (e.g. network|syntax errors) simply set to undefined (module.err contains reason)
     // - so reject clause (of Promise below) is NEVER used
 
-    const actualModuleUrl = resolveUrl(moduleRequestUrl, parentModuleUrl, defaultUrlResolver);
-
     return new Promise(async resolve => { // NO 'reject' param/clause as per note above...
 
-        const module = loadedModules[actualModuleUrl] || (loadedModules[actualModuleUrl] = { isKnown: false, module: undefined });
+        const actualModuleUrl = urlResolver(moduleRequestUrl, baseUrl);
 
-        function moduleIsNowResolved(m, type) {
-            // first
-            if (arguments.length === 1) {
-                const err = module.err = m;
-                const name = `dynamic module ${moduleRequestUrl} (${actualModuleUrl})`;
-                // test 'err.message' (to give friendly hint): e.g. from chrome: 'await is only valid in async function'
-                if (err.name === 'SyntaxError' && /await.+async.+function/i.test(err.message || ''))
-                    console.warn(`${name} may be CommonJS with nested requires\n\t(only top-level requires are supported by loadModule)`)
-                else
-                    console.error(`${name} failed to be loaded`, err);
-            }
-            else {
-                module.module = m; 
-                module.type = type;
-            }
+        const module = loadedModules[actualModuleUrl] || (loadedModules[actualModuleUrl] = new Module({baseUrl}));//{resolve}));//{ unresolved: true, module: undefined });
 
-            // then
-            module.isLoaded = !!module.module;
+        // function moduleIsNowResolved(m, type) {
+        //     // first
+        //     if (arguments.length === 1) { // assume it's an Error object
+        //         const err = module.err = arguments[0];
+        //         const name = `dynamic module ${moduleRequestUrl} (${actualModuleUrl})`;
+        //         // now, test 'err.message' to give friendly hint: e.g. from chrome: 'await is only valid in async function'
+        //         if (err.name === 'SyntaxError' && /await.+async.+function/i.test(err.message || ''))
+        //             console.warn(`${name} may be CommonJS with nested requires\n\t(only top-level requires are supported by loadModule)`)
+        //         else
+        //             console.error(`${name} failed to be loaded`, err);
+        //     }
+        //     else {
+        //         module.module = m; 
+        //         module.type = type;
+        //     }
 
-            // now, resolve modules waiting on this one
-            module.listeners.forEach(listener => listener(module));
+        //     // then
+        //     module.isLoaded = !!module.module;
 
-            // finally, resolve this one
-            resolve(module);
+        //     // now, resolve modules waiting on this one
+        //     module.listeners.forEach(listener => listener(module));
+        //     delete module.listeners;
+        //     delete module.unresolved;
+
+        //     // finally, resolve this one
+        //     resolve(module);
+        // }
+
+        if (module.isLoaded) {
+            resolve(module); // modules are loaded once, then reused
         }
-
-        if (module.isKnown) {
-            if (module.isLoaded || module.err) {
-                resolve(module); // modules are loaded once, then reused
-            }
-            else {
-                if (parentModuleUrl) {
-                    const cycle = module.dependents.find(m => m === parentModuleUrl);
-                    if (cycle)
-                        return moduleIsNowResolved(new Error('CYCLYCAL DEPENDENCY: ' + moduleRequestUrl + '<-->' + cycle));
-                    else
-                        module.dependents.push(parentModuleUrl);
-                }
-
-                module.listeners.push(resolvedModule => resolve(resolvedModule)); // ??? needs TESTING
-            }
+        else if (module.isUnresolved) { // add myself (i.e. my 'resolve') to its list
+            module.addDependent(baseUrl, () => resolve(module));//resolve); // base? not actual? 
         }
         else { // loading a new module
+            module.resolve = resolve;
 
-            Object.assign(module, {
-                isKnown: true,
-                dependents: [ parentModuleUrl ],
-                listeners: [], // i.e. those waiting for this module to be loaded
-                moduleRequestUrl, // original, as requested
-                actualModuleUrl, // as received, including possible redirects (301/302)
-            });
+            // Object.assign(module, {
+            //     isKnown: true,
+            //     dependents: [ baseUrl ],
+            //     listeners: [], // i.e. those waiting for this module to be loaded
+            //     moduleRequestUrl, // original, as requested
+            //     actualModuleUrl, // as received, including possible redirects (301/302)
+            // });
 
             try {
                 const m = await download(actualModuleUrl);
@@ -152,27 +189,43 @@ export default async function loadModule(moduleRequestUrl, parentModuleUrl = win
                 const amdProxy = { // for amd modules
                     define: amdDefine,
                     module: undefined,
-                    require: () => {throw new Error('require is invalid in AMD modules (use require-async instead): ' + moduleRequestUrl);},
+                    exports: undefined,
+                    require: name => {throw new Error(`require is invalid in AMD module ${moduleRequestUrl}:\n\tuse 'await requireAsync("${name}"' instead`)},
+                    requireAsync,
+                    //asyncRequire: requireAsync, // an alias
                 };
 
+                const cjsExports = {};
                 const cjsProxy = { // for commonjs modules
                     define: () => { throw new Error('unexpected use of DEFINE in commonJS module')},
-                    module: { exports: {} },
-                    require: async modName => (await loadModule(modName, baseUrlForSubDeps)).module,
+                    module: { exports: cjsExports },//{} },
+                    exports: cjsExports,
+                    require: async modName => (await loadModule(modName, {baseUrl: baseUrlForSubDeps, globals})).module,
                 }
 
-                const proxiedGlobals = { names: [], values: [], };
-                Object.entries(globalAliases).forEach(([name,genFcn]) => {
-                    proxiedGlobals.names.push(name);
-                    proxiedGlobals.values.push(genFcn(amdProxy, cjsProxy)); // passed as objects so callers can change default values
-                })
+                // change proxies as needed
+                globals(amdProxy, cjsProxy); 
+                log('PROXISE', amdProxy, cjsProxy);
+                // then
+                // const amdProxiedGlobals = { names: [], values: [] };
+                // Object.entries(amdProxy).forEach(([name,val]) => {
+                //     amdProxiedGlobals.names.push(name);
+                //     amdProxiedGlobals.values.push(val); // passed as objects so callers can change default values
+                // })
+
+                // const proxiedGlobals = { amd: { names: [], values: [] }, cjs:  { names: [], values: [] } };
+                // Object.entries(globals).forEach(([name,genFcn]) => {
+                //     proxiedGlobals.names.push(name);
+                //     proxiedGlobals.values.push(genFcn(amdProxy, cjsProxy)); // passed as objects so callers can change default values
+                // })
                
                 // Try as AMD module first because 1) many browser-based modules are AMD/UMD anyway and 2) no need for code manipulation
                 // - MUST pass dummy module/exports/require else would use/fallback those from global context (i.e. window) if any
                 // - Use AsyncFunction in case module code uses async-require
                 // - could initModule.bind(x) but this would change meaning of 'this' within module: default is global/window object
                 //    - this could be a means to protect the window object if needed (e.g. by replacing it with null, or a proxying object)
-                const initModule = new AsyncFunction('define', 'module', 'exports', 'require', ...proxiedGlobals.names, code); 
+                //const initModule = new AsyncFunction(...amdProxiedGlobals.names, code);//'define', 'module', 'exports', 'require', ...proxiedGlobals.names, code); 
+                const initModule = new AsyncFunction(...Object.keys(amdProxy), code);//'define', 'module', 'exports', 'require', ...proxiedGlobals.names, code); 
 
                 // IMPORTANT: all AMD modules test for 'define.amd' being 'truthy'
                 //            but some (e.g. lodash) ALSO check that "typeof define.amd == 'object'" so...
@@ -224,7 +277,7 @@ export default async function loadModule(moduleRequestUrl, parentModuleUrl = win
                     // }
 
                     // resolve deps
-                    const deps = externals.map(dep => loadModule(dep, baseUrlForSubDeps));
+                    const deps = externals.map(dep => loadModule(dep, {baseUrl: baseUrlForSubDeps, globals}));
 
                     Promise.all(deps).then(modules => {
                         try {
@@ -238,10 +291,13 @@ export default async function loadModule(moduleRequestUrl, parentModuleUrl = win
 
                 try { 
                     // pass #1: try it as an AMD module first
-                    await initModule(amdProxy.define, amdProxy.module, (amdProxy.module || {}).exports, amdProxy.require, ...proxiedGlobals.values);
+                    //await initModule(amdProxy.define, amdProxy.module, (amdProxy.module || {}).exports, amdProxy.require, ...proxiedGlobals.values);
+                    await initModule(...Object.values(amdProxy));//.define, amdProxy.module, (amdProxy.module || {}).exports, amdProxy.require, ...proxiedGlobals.values);
                 }
                 catch(err) {
-                    isAMD && moduleIsNowResolved(err); // if was an AMD, consider it resolved (though with errors)
+                    isAMD && module.resolveWithError(err); // if was an AMD, consider it resolved (though with errors)
+                    
+                    // else, fall through and see if it works with CJS below
                 }
 
                 if (!isAMD) {
@@ -250,22 +306,17 @@ export default async function loadModule(moduleRequestUrl, parentModuleUrl = win
                         // BIG CAVEAT: only top-level requires will be honored; nested requires (i.e. within non-asyn functions) will fail
                         
                         const awaitableCode = commonjsToAwaitRequire(code);
-                        const commonjsInit = new AsyncFunction('module', 'exports', 'require', ...proxiedGlobals.names, awaitableCode);
-                        try {
-                            await commonjsInit(cjsProxy.module, (cjsProxy.module || {}).exports, cjsProxy.require, ...proxiedGlobals.values);
-                            moduleIsNowResolved((cjsProxy.module||{}).exports, 'CommonJS');
-                        }
-                        catch(err) {
-                            moduleIsNowResolved(err);
-                        }
+                        const commonjsInit = new AsyncFunction(...Object.keys(cjsProxy), awaitableCode);//'module', 'exports', 'require', ...proxiedGlobals.names, awaitableCode);
+                        await commonjsInit(...Object.values(cjsProxy));// cjsProxy.module, (cjsProxy.module || {}).exports, cjsProxy.require, ...proxiedGlobals.values);
+                        module.resolveOK('CommonJS', (cjsProxy.module || {}).exports || cjsExports);
                     }
                     else {
-                        moduleIsNowResolved(new Error('module seems to be neither AMD/UMD nor CommonJS'));
+                        module.resolveWithError(new Error('module seems to be neither AMD/UMD nor CommonJS'));
                     }
                 }
             }
             catch(err) {
-                moduleIsNowResolved(err);
+                module.resolveWithError(err);
             }
         }
     });
