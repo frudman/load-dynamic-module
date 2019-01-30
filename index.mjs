@@ -1,3 +1,21 @@
+
+// NOT FULLY TESTED
+// NOT FULLY TESTED
+// NOT FULLY TESTED
+// NOT FULLY TESTED: especially when modules have conflicting/cyclical dependencies
+// NOT FULLY TESTED
+// NOT FULLY TESTED
+// NOT FULLY TESTED
+
+// you've been warned! :-)
+
+
+// MUST DOCUMENT: GLOBALS allowed to be defined ahead of a module's initialialization
+// - can define custom globals
+// - can 'protect' framework code: e.g. redefine window. or console. or alert/confirm
+
+
+
 // read: https://developers.google.com/web/fundamentals/primers/modules
 //  - https://developers.google.com/web/updates/2017/11/dynamic-import
 //  - https://www.sitepoint.com/using-es-modules/
@@ -27,7 +45,7 @@ const commonjsToAwaitRequire = cjs => cjs.replace(/\brequire\s*[(]/g, 'await req
 // quick way to see if code MIGHT be commonjs
 const isCommonJS = code => /module[.]exports/.test(code); 
 
-// convert a dependancy reference to an http-gettable url
+// convert a dependency reference to an http-gettable url
 function defaultUrlResolver(requestedUrl, baseURL) {
     if (/^(https?[:])?[/][/]/i.test(requestedUrl)) 
         return requestedUrl; // explicit url so leave it alone
@@ -39,11 +57,21 @@ function defaultUrlResolver(requestedUrl, baseURL) {
     return baseURL ? new URL(requestedUrl, baseURL).href : requestedUrl;
 }
 
-// our module cache
-const loadedModules = {};
+// // our module cache
+// const loadedModules = {};
 
 class Module {
-    
+
+    static loadedModules = {};
+
+    static getModule(name) {
+        return Module.loadedModules[name] || (Module.loadedModules[name] = new Module({name}));
+    }
+
+    static addModule(name, module) {
+        Module.loadedModules[name] = new Module({name, module});
+    }
+
     constructor({name, module} = {}) {
         this.name = name; // its source URL
         this.module = module;
@@ -57,6 +85,18 @@ class Module {
         this.publicizeResolution();
     }
 
+    resolvedWithError(err) {
+        this.err = err;
+
+        // try to give a friendly hint: e.g. from chrome: 'await is only valid in async function'
+        if (err.name === 'SyntaxError' && /await.+async.+function/i.test(err.message || ''))
+            console.warn(`${this.name} may be CJS module with nested requires\n\t(nested requires must be inside async functions)`)
+        else
+            console.error(`${this.name} module was not loaded`, err);
+
+        this.publicizeResolution();
+    }
+
     publicizeResolution() {
         // first...
         this.resolveMe();
@@ -67,22 +107,8 @@ class Module {
         delete this.waitingOnMe; // why not...
     }
 
-    resolvedWithError(err) {
-        this.err = err;
-
-        // now, test 'err.message' to give friendly hint: e.g. from chrome: 'await is only valid in async function'
-        if (err.name === 'SyntaxError' && /await.+async.+function/i.test(err.message || ''))
-            console.warn(`${this.name} may be CJS module with nested requires\n\t(nested requires must be inside async functions)`)
-        else
-            console.error(`${this.name} module was not loaded`, err);
-
-        this.publicizeResolution();
-    }
-
     dependsOnMe(dependentUrl, resolveDependent) {
         
-        log('ADDING dependency: ', dependentUrl, ' needs ', this.name);
-
         const deps = this.waitingOnMe || (this.waitingOnMe = []);
 
         if (deps.find(dep => dep.url === dependentUrl)) {
@@ -96,29 +122,25 @@ class Module {
 }
 
 
-
-// allow for pre-loaded modules to be referenced
+// allows modules loaded by other means to be referenced by all
 export function addKnownModule(ref, module, resolveUrl = defaultUrlResolver) {
     // store name as it would be resolved so if different relative URLS point to same module,
     // that module is loaded only once
     const name = resolveUrl(ref);
-    loadedModules[name] = new Module({name, module});
+    //loadedModules[name] = new Module({name, module});
+
+    Module.addModule(name, new Module({name, module}))
 }
 
 addKnownModule('load-dynamic-module', loadModule); // self: trivial case
 
-// MUST DOCUMENT: GLOBALS allowed to be defined ahead of a module's initialialization
-// - can define custom globals
-// - can 'protect' framework code: e.g. redefine window. or console. or alert/confirm
-
 export default async function loadModule(moduleRequestUrl, {baseUrl = window.location.href, globals = ()=>{}, urlResolver = defaultUrlResolver} = {}) {
 
-    // need baseUrl for dependencies that use relative-urls
-    // - also in case it has deps: requestUrl+baseUrl becomes the dep that we wait upon
+    // need baseUrl for sub-dependencies that use relative-urls: sub-deps are therefore relative to baseUrl
 
     // IMPORTANT: baseUrl is ALSO the parent module's url: i.e. the module that needs this moduleRequestUrl
 
-    // IMPORTANT: loadModuleByUrl NEVER FAILS, but/so:
+    // IMPORTANT: loadModule NEVER FAILS, but/so:
     // - so unloadable modules (e.g. network or syntax errors) are set to undefined (module.err contains reason)
     // - so reject clause (of Promise below) is NEVER used
 
@@ -126,7 +148,7 @@ export default async function loadModule(moduleRequestUrl, {baseUrl = window.loc
 
         const actualModuleUrl = urlResolver(moduleRequestUrl, baseUrl);
 
-        const module = loadedModules[actualModuleUrl] || (loadedModules[actualModuleUrl] = new Module({name: actualModuleUrl}));
+        const module = Module.getModule(actualModuleUrl);// loadedModules[actualModuleUrl] || (loadedModules[actualModuleUrl] = new Module({name: actualModuleUrl}));
 
         if (module.isLoaded) {
             resolve(module); // modules are loaded once, then reused
