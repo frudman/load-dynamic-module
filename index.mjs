@@ -8,23 +8,23 @@
 
 // read: https://hackernoon.com/7-different-ways-to-use-es-modules-today-fc552254ebf4
 
-// dynamic import() NOT SUPPORTED by most modern browsers (as of jan 21, 2019: edge:no, firefox:no, chrome:yes, safari:yes)
+// dynamic import() is NOT SUPPORTED by most modern browsers:
+// - as of jan 21, 2019: edge=no, firefox=no, chrome=yes, safari=yes
 // - https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/import
 
+// our method used to actually download modules
+import { http as download} from './http-get'; // instead of axios.get (lighter code base)
 
-// method used to actually download modules
-import { http as download} from './http-get'; // instead of axios.get (lighter)
-
-// prevent webpack/babel from removing async syntax (which neutralizes intended effect)
+// prevent webpack/babel from removing async syntax (which would neutralize intended effect)
 // see: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/AsyncFunction
 const AsyncFunction = new Function(`return Object.getPrototypeOf(async function(){}).constructor`)();
 
-// convert commonjs 'require' (implicit sync) to 'await require' (explicit sync)
-// will only work for top-level requires since nested requires (i.e. within a function) will fail with syntax error
-// (unless function itself was marked async)
+// convert commonjs 'require' (implicitly sync) to 'await require' (explicit async)
+// - WORKS ONLY FOR top-level requires since nested requires (i.e. within a function) will fail 
+//   with syntax error. unless function itself was already marked async
 const commonjsToAwaitRequire = cjs => cjs.replace(/\brequire\s*[(]/g, 'await require(');
 
-// quick way to see if code might be commonjs
+// quick way to see if code MIGHT be commonjs
 const isCommonJS = code => /module[.]exports/.test(code); 
 
 // convert a dependancy reference to an http-gettable url
@@ -42,190 +42,143 @@ function defaultUrlResolver(requestedUrl, baseURL) {
 // our module cache
 const loadedModules = {};
 
+class Module {
+    
+    constructor({name, module} = {}) {
+        this.name = name; // its source URL
+        this.module = module;
+    }
+
+    get isLoaded() { return this.module || this.err; }
+    get isUnresolved() { return !this.isLoaded && !!this.resolveMe; }
+
+    resolved(m) {
+        this.module = m; 
+        this.publicizeResolution();
+    }
+
+    publicizeResolution() {
+        // first...
+        this.resolveMe();
+        delete this.resolveMe; // why not...
+
+        // ...then, let dependents know
+        (this.waitingOnMe || []).forEach(dep => dep.resolveDependent());
+        delete this.waitingOnMe; // why not...
+    }
+
+    resolvedWithError(err) {
+        this.err = err;
+
+        // now, test 'err.message' to give friendly hint: e.g. from chrome: 'await is only valid in async function'
+        if (err.name === 'SyntaxError' && /await.+async.+function/i.test(err.message || ''))
+            console.warn(`${this.name} may be CJS module with nested requires\n\t(nested requires must be inside async functions)`)
+        else
+            console.error(`${this.name} module was not loaded`, err);
+
+        this.publicizeResolution();
+    }
+
+    dependsOnMe(dependentUrl, resolveDependent) {
+        
+        log('ADDING dependency: ', dependentUrl, ' needs ', this.name);
+
+        const deps = this.waitingOnMe || (this.waitingOnMe = []);
+
+        if (deps.find(dep => dep.url === dependentUrl)) {
+            // adding same dependent more than once: i have a cycle? (what if separate mods requesting )
+            this.resolvedWithError(new Error('CYCLYCAL DEPENDENCY: ' + dependentUrl + '<-->' + this.name));
+        }
+        else {
+            deps.push({url: dependentUrl, resolveDependent});
+        }
+    }
+}
+
+
+
 // allow for pre-loaded modules to be referenced
-export function addKnownModule(name, module, resolveUrl = defaultUrlResolver) {
+export function addKnownModule(ref, module, resolveUrl = defaultUrlResolver) {
     // store name as it would be resolved so if different relative URLS point to same module,
     // that module is loaded only once
-    loadedModules[resolveUrl(name)] = new Module({type: 'builtin', module});
-    //  { 
-    //     isLoaded: true,
-    //     type: 'isBuiltin',
-    //     module,
-    // };
+    const name = resolveUrl(ref);
+    loadedModules[name] = new Module({name, module});
 }
 
 addKnownModule('load-dynamic-module', loadModule); // self: trivial case
 
-// a gimme global (for later on)
-async function requireAsync(url, {baseUrl = window.location.href, globals = ()=>{}, urlResolver = defaultUrlResolver} = {}) {
-    const requested = await loadModule(url, {baseUrl, globals, urlResolver});
-    return requested.module; 
-}
-
-// MUST DOCUMENT: this allows for GLOBALS to be defined ahead of a module's initialialization
-// to document: must be a generating function so that base 'define' is available
-
-class Module {
-    constructor({type, module, baseUrl} = {}) {
-        this.type = type;
-        this.module = module;
-        this.baseUrl = baseUrl;
-        //this.resolve = resolve;
-    }
-
-    get isLoaded() { return this.module || this.err; }
-    get isUnresolved() { return !!this.resolve; }
-
-    resolveOK(type, m) {
-        this.module = m; 
-        this.type = type;
-        this.nowResolved();
-    }
-
-    nowResolved() {
-        // let dependents know
-        this.listeners.forEach(listener => listener(this));
-        delete this.listeners;
-
-        // finally
-        this.resolve(this);
-        delete this.resolve;
-    }
-
-    resolveWithError(err) {
-        this.err = err;
-        const name = `dynamic module ${moduleRequestUrl} (${actualModuleUrl})`;
-        // now, test 'err.message' to give friendly hint: e.g. from chrome: 'await is only valid in async function'
-        if (err.name === 'SyntaxError' && /await.+async.+function/i.test(err.message || ''))
-            console.warn(`${name} may be CommonJS with nested requires\n\t(only top-level requires are supported by loadModule)`)
-        else
-            console.error(`${name} failed to be loaded`, err);
-
-        this.nowResolved();
-    }
-
-    addDependent(dependentUrl, dependentResolve) {
-        if (baseUrl) {
-            const cycle = module.dependents.find(m => m === baseUrl);
-            if (cycle)
-                return moduleIsNowResolved(new Error('CYCLYCAL DEPENDENCY: ' + moduleRequestUrl + '<-->' + cycle));
-            else
-                module.dependents.push(baseUrl);
-        }
-
-        module.listeners.push(resolvedModule => resolve(resolvedModule)); // ??? needs TESTING
-
-    }
-}
-
-
-
+// MUST DOCUMENT: GLOBALS allowed to be defined ahead of a module's initialialization
+// - can define custom globals
+// - can 'protect' framework code: e.g. redefine window. or console. or alert/confirm
 
 export default async function loadModule(moduleRequestUrl, {baseUrl = window.location.href, globals = ()=>{}, urlResolver = defaultUrlResolver} = {}) {
 
-    // baseUrl in case some of its deps are relative-urls
-    // - also in case it has deps: request+base becomes object that we wait upon
+    // need baseUrl for dependencies that use relative-urls
+    // - also in case it has deps: requestUrl+baseUrl becomes the dep that we wait upon
+
+    // IMPORTANT: baseUrl is ALSO the parent module's url: i.e. the module that needs this moduleRequestUrl
 
     // IMPORTANT: loadModuleByUrl NEVER FAILS, but/so:
-    // - so unloadable modules (e.g. network|syntax errors) simply set to undefined (module.err contains reason)
+    // - so unloadable modules (e.g. network or syntax errors) are set to undefined (module.err contains reason)
     // - so reject clause (of Promise below) is NEVER used
 
     return new Promise(async resolve => { // NO 'reject' param/clause as per note above...
 
         const actualModuleUrl = urlResolver(moduleRequestUrl, baseUrl);
 
-        const module = loadedModules[actualModuleUrl] || (loadedModules[actualModuleUrl] = new Module({baseUrl}));//{resolve}));//{ unresolved: true, module: undefined });
-
-        // function moduleIsNowResolved(m, type) {
-        //     // first
-        //     if (arguments.length === 1) { // assume it's an Error object
-        //         const err = module.err = arguments[0];
-        //         const name = `dynamic module ${moduleRequestUrl} (${actualModuleUrl})`;
-        //         // now, test 'err.message' to give friendly hint: e.g. from chrome: 'await is only valid in async function'
-        //         if (err.name === 'SyntaxError' && /await.+async.+function/i.test(err.message || ''))
-        //             console.warn(`${name} may be CommonJS with nested requires\n\t(only top-level requires are supported by loadModule)`)
-        //         else
-        //             console.error(`${name} failed to be loaded`, err);
-        //     }
-        //     else {
-        //         module.module = m; 
-        //         module.type = type;
-        //     }
-
-        //     // then
-        //     module.isLoaded = !!module.module;
-
-        //     // now, resolve modules waiting on this one
-        //     module.listeners.forEach(listener => listener(module));
-        //     delete module.listeners;
-        //     delete module.unresolved;
-
-        //     // finally, resolve this one
-        //     resolve(module);
-        // }
+        const module = loadedModules[actualModuleUrl] || (loadedModules[actualModuleUrl] = new Module({name: actualModuleUrl}));
 
         if (module.isLoaded) {
             resolve(module); // modules are loaded once, then reused
         }
         else if (module.isUnresolved) { // add myself (i.e. my 'resolve') to its list
-            module.addDependent(baseUrl, () => resolve(module));//resolve); // base? not actual? 
+            log(baseUrl + ' WAITING FOR dependent ' + actualModuleUrl);
+            module.dependsOnMe(baseUrl, () => resolve(module)); // queue request: use baseUrl because that's the one depending on me
         }
         else { // loading a new module
-            module.resolve = resolve;
-
-            // Object.assign(module, {
-            //     isKnown: true,
-            //     dependents: [ baseUrl ],
-            //     listeners: [], // i.e. those waiting for this module to be loaded
-            //     moduleRequestUrl, // original, as requested
-            //     actualModuleUrl, // as received, including possible redirects (301/302)
-            // });
+            module.resolveMe = () => resolve(module);
 
             try {
-                const m = await download(actualModuleUrl);
-                const baseUrlForSubDeps = m.responseURL; // any deps in this module are relative to this base url
-                const code = m.data; // may be AMD/UMD or CommonJS
+                const m = await download(actualModuleUrl); // do redirects matter for relative URLs? if redirected once, will redirect again for subs, right?
+                // const baseUrlForSubDeps = m.responseURL; // any deps in this module (with a relative url) are relative to this base url
+                // //if (baseUrlForSubDeps !== actualModuleUrl)
+                // loadedModules[baseUrlForSubDeps] = module; // may be yet another reference to that module
+
+                //const subDepResolution = {baseUrl: baseUrlForSubDeps, globals, urlResolver};
+                const subDepResolution = {baseUrl: actualModuleUrl, globals, urlResolver};
+
+                const code = m.data; // may be AMD/UMD or CommonJS: we don't know yet
 
                 const amdProxy = { // for amd modules
                     define: amdDefine,
                     module: undefined,
                     exports: undefined,
-                    require: name => {throw new Error(`require is invalid in AMD module ${moduleRequestUrl}:\n\tuse 'await requireAsync("${name}"' instead`)},
-                    requireAsync,
-                    //asyncRequire: requireAsync, // an alias
+                    require(ref) { throw new Error(`cannot 'require' in AMD module ${actualModuleUrl}:\n\try 'await requireAsync("${ref}"' instead`) },
+                    async requireAsync(nameOrUrl) {
+                        const requested = await loadModule(nameOrUrl, subDepResolution);
+                        return requested.module; 
+                    },
                 };
 
                 const cjsExports = {};
                 const cjsProxy = { // for commonjs modules
                     define: () => { throw new Error('unexpected use of DEFINE in commonJS module')},
-                    module: { exports: cjsExports },//{} },
+                    module: { exports: cjsExports },
                     exports: cjsExports,
-                    require: async modName => (await loadModule(modName, {baseUrl: baseUrlForSubDeps, globals})).module,
+
+                    // resolve dep for CJS module
+                    require: async modName => (await loadModule(modName, subDepResolution)).module,
                 }
 
-                // change proxies as needed
+                // change proxies & globals as needed
                 globals(amdProxy, cjsProxy); 
-                log('PROXISE', amdProxy, cjsProxy);
-                // then
-                // const amdProxiedGlobals = { names: [], values: [] };
-                // Object.entries(amdProxy).forEach(([name,val]) => {
-                //     amdProxiedGlobals.names.push(name);
-                //     amdProxiedGlobals.values.push(val); // passed as objects so callers can change default values
-                // })
-
-                // const proxiedGlobals = { amd: { names: [], values: [] }, cjs:  { names: [], values: [] } };
-                // Object.entries(globals).forEach(([name,genFcn]) => {
-                //     proxiedGlobals.names.push(name);
-                //     proxiedGlobals.values.push(genFcn(amdProxy, cjsProxy)); // passed as objects so callers can change default values
-                // })
                
                 // Try as AMD module first because 1) many browser-based modules are AMD/UMD anyway and 2) no need for code manipulation
-                // - MUST pass dummy module/exports/require else would use/fallback those from global context (i.e. window) if any
-                // - Use AsyncFunction in case module code uses async-require
+                // - MUST pass dummy module/exports/require else would use/fallback on those from global context if any
+                // - Use AsyncFunction in case module code uses async requires
                 // - could initModule.bind(x) but this would change meaning of 'this' within module: default is global/window object
                 //    - this could be a means to protect the window object if needed (e.g. by replacing it with null, or a proxying object)
-                //const initModule = new AsyncFunction(...amdProxiedGlobals.names, code);//'define', 'module', 'exports', 'require', ...proxiedGlobals.names, code); 
-                const initModule = new AsyncFunction(...Object.keys(amdProxy), code);//'define', 'module', 'exports', 'require', ...proxiedGlobals.names, code); 
+                const initModule = new AsyncFunction(...Object.keys(amdProxy), code);
 
                 // IMPORTANT: all AMD modules test for 'define.amd' being 'truthy'
                 //            but some (e.g. lodash) ALSO check that "typeof define.amd == 'object'" so...
@@ -240,15 +193,15 @@ export default async function loadModule(moduleRequestUrl, {baseUrl = window.loc
                     if (typeof moduleDefine !== 'function') 
                         throw new Error(`expecting 'define' to be a function (was ${typeof moduleDefine})`);
 
-                    // find out how many deps the define function expects
-                    const numDeps = moduleDefine.length; // function.length returns how many parms (so, deps) are declared for it
+                    // find out how many deps the moduleDefine function expects
+                    const numDeps = moduleDefine.length; // ...function.length returns how many parms (so, deps) are declared for it
 
                     // we allow for either an array of deps (traditional) or just comma-separated parms (for convenience when creating amd modules manually)
-                    // we're ok with a mixture of strings and arrays (of strings only), though not clear why that would be the case
-                    // and we always work backwards on parms (from right to left) to allow for possibility of a module name at the front/left
-                    // (as per traditional, in case first/leftmost parm is module's 'name', as per typical AMD define([name,][...deps,] fcn(...depRefs){}))
+                    // we're also ok with a mixture of strings and arrays (of strings only), though not clear why that would be the case
+                    // and we always work backwards on parms (from right to left) to allow for possibility of a module name at the front/leftmost position
+                    // (as per traditional, in case first/leftmost parm is module's 'name', as is typical of AMD define([mod-name,][...deps,] fcn(...depRefs){}))
                     // IF a module name is specified, it remains UNUSED (not needed for modules loaded by URLs)
-                    // POSSIBLE: if single string parm left (i.e. module name), maybe register it as the module's name also: i.e. an alias
+                    // POSSIBLE: if single string parm left (i.e. module name), maybe register it as the module's name also: i.e. as an alias
                     // - but what happens if another module wants that name: overwrite? remove both? keep first? keep both?
                     const externals = [];
                     while(externals.length < numDeps) {
@@ -269,33 +222,34 @@ export default async function loadModule(moduleRequestUrl, {baseUrl = window.loc
                     }
 
 
-                    // this is the module's name (as author wants it defined)
+                    // this is the module's name (as module author wants it defined) [we're not using it here: code is for reference only]
                     // if (args.length === 1 && typeof args[0] === 'string') { ...UNUSED for now...
                     //     // use it? 
                     //     // maybe set option to use only URLs, URLs AND named defines, or just named defines (if no name, use url)
                     //     // to consider: add option in case of conflicts: replace with newer/last-loaded, remove both, keep first (e.g. different url but same name)
                     // }
 
-                    // resolve deps
-                    const deps = externals.map(dep => loadModule(dep, {baseUrl: baseUrlForSubDeps, globals}));
+                    // [start to] resolve deps for AMD module
+                    const deps = externals.map(dep => loadModule(dep, subDepResolution));
 
-                    Promise.all(deps).then(modules => {
+                    // wait for all resolutions to be completed
+                    Promise.all(deps).then(resolvedDeps => {
                         try {
-                            moduleIsNowResolved(moduleDefine(...modules.map(m => m.module)), 'AMD'); // could fail (if not [correct] AMD)
+                            module.resolved(moduleDefine(...resolvedDeps.map(dep => dep.module))); // could fail (if not [correct] AMD)
                         }
                         catch(err) {
-                            moduleIsNowResolved(err); // ...but with errors
+                            module.resolvedWithError(err);
                         }
                     });
                 }
 
                 try { 
                     // pass #1: try it as an AMD module first
-                    //await initModule(amdProxy.define, amdProxy.module, (amdProxy.module || {}).exports, amdProxy.require, ...proxiedGlobals.values);
-                    await initModule(...Object.values(amdProxy));//.define, amdProxy.module, (amdProxy.module || {}).exports, amdProxy.require, ...proxiedGlobals.values);
+                    await initModule(...Object.values(amdProxy));
                 }
                 catch(err) {
-                    isAMD && module.resolveWithError(err); // if was an AMD, consider it resolved (though with errors)
+                    // if was an AMD, consider it resolved (though with errors)
+                    isAMD && module.resolvedWithError(err);
                     
                     // else, fall through and see if it works with CJS below
                 }
@@ -303,20 +257,20 @@ export default async function loadModule(moduleRequestUrl, {baseUrl = window.loc
                 if (!isAMD) {
                     if (isCommonJS(code)) { 
                         // pass #2: yes, less efficient (since 2 passes) but allows for both modes (i.e. amd/umd and cjs) to be imported
-                        // BIG CAVEAT: only top-level requires will be honored; nested requires (i.e. within non-asyn functions) will fail
+                        // BIG CAVEAT: only top-level requires will be honored in cjs; nested requires (within non-async functions) will fail
                         
                         const awaitableCode = commonjsToAwaitRequire(code);
-                        const commonjsInit = new AsyncFunction(...Object.keys(cjsProxy), awaitableCode);//'module', 'exports', 'require', ...proxiedGlobals.names, awaitableCode);
-                        await commonjsInit(...Object.values(cjsProxy));// cjsProxy.module, (cjsProxy.module || {}).exports, cjsProxy.require, ...proxiedGlobals.values);
-                        module.resolveOK('CommonJS', (cjsProxy.module || {}).exports || cjsExports);
+                        const commonjsInit = new AsyncFunction(...Object.keys(cjsProxy), awaitableCode);
+                        await commonjsInit(...Object.values(cjsProxy));
+                        module.resolved((cjsProxy.module || {}).exports || cjsExports);
                     }
                     else {
-                        module.resolveWithError(new Error('module seems to be neither AMD/UMD nor CommonJS'));
+                        module.resolvedWithError(new Error('module seems to be neither AMD/UMD nor CommonJS'));
                     }
                 }
             }
             catch(err) {
-                module.resolveWithError(err);
+                module.resolvedWithError(err);
             }
         }
     });

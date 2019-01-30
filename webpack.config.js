@@ -5,6 +5,8 @@
 //  - npm update [regularly]
 //  - also: npm run pub [to publish new version]
 
+// right now: NO .babelrc for building
+
 const { genCombinations } = require('tidbits');
 
 // "maintained" minimizer for webpack (from https://github.com/terser-js/terser)
