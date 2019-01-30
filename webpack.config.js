@@ -46,6 +46,17 @@ const webpackConfig = opt => ({
             // // - also: https://github.com/webpack/webpack/issues/6522#issuecomment-366708234
             // globalObject: `typeof self !== 'undefined' ? self : this`, // replaces default of 'window' (for webpack 4)
         }, 
+        module: {
+            rules: [
+                // as per: https://webpack.js.org/contribute/writing-a-loader/
+                //  "loaders (in .use[arrays] below) are executed from last-to-first (e.g. right-to-left below)"
+
+                // don't forget to: npm install --save-dev @babel/core @babel/preset-env babel-loader @babel/plugin-proposal-class-properties 
+    
+                {  test: /\.m?js$/, use: 'babel-loader', exclude: /node_modules/ }, // what does exclude do here?    
+            ]
+        },
+        
         optimization: {
             minimize: opt.minimize,
             minimizer: opt.minimize ? [ minimizerConfig(opt.ecma) ] : [],

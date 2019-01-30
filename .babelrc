@@ -1,0 +1,28 @@
+// FYI: these BABEL settings (below) could be included directly in package.json as ".babel" root property
+// (as per https://babeljs.io/docs/en/config-files)
+// BUT... package.json CANNOT be annotated with comments so keep it as a separate file to allow for this
+
+// important: .babelrc.js is another way to configure babel by allowing for dynamic settings
+
+{
+    "presets": [ // read: https://babeljs.io/docs/en/babel-preset-env
+        ["@babel/env", {
+            "modules": false, // false to NOT transform modules (presumably webpack will do this?)
+            "targets": { 
+                // we skip IE: too many limitations and not needed to support windows users anymore
+                // todo: reduce browser versions below based on minimum reqs, documented in CAN-I-USE.md
+                "chrome": "71",
+                "firefox": "64",
+                "edge": "44",
+                "safari": "11.1",
+                // "browsers": ["> 1%", "last 2 versions", "not ie <= 8"] // NOPE, we don't want this anymore
+            }
+        }]
+    ],
+    "plugins": [
+        // Enables CLASS private & static properties (see example in globals.js/EventEmitter)
+        // - https://www.npmjs.com/package/@babel/plugin-proposal-class-properties
+        // - https://babeljs.io/docs/en/next/babel-plugin-proposal-class-properties.html
+        "@babel/plugin-proposal-class-properties",
+    ]
+}
