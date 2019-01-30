@@ -9,6 +9,8 @@
 
 // you've been warned! :-)
 
+// not building with BundlePhobia starting at version 31: not sure why...
+
 
 // MUST DOCUMENT: GLOBALS allowed to be defined ahead of a module's initialialization
 // - can define custom globals
