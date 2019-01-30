@@ -59,7 +59,7 @@ function defaultUrlResolver(requestedUrl, baseURL) {
 
 class Module {
 
-    static loadedModules = {};
+    static loadedModules = {}; 
 
     static getModule(name) {
         return Module.loadedModules[name] || (Module.loadedModules[name] = new Module({name}));
