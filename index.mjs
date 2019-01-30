@@ -2,7 +2,7 @@
 // NOT FULLY TESTED
 // NOT FULLY TESTED
 // NOT FULLY TESTED
-// NOT FULLY TESTED: especially when modules have conflicting/cyclical dependencies
+// NOT FULLY TESTED: especially when modules have conflicting/cyclical dependencies (seems to work so far but NOT FULLY TESTED)
 // NOT FULLY TESTED
 // NOT FULLY TESTED
 // NOT FULLY TESTED
@@ -56,9 +56,6 @@ function defaultUrlResolver(requestedUrl, baseURL) {
     // based on: https://developer.mozilla.org/en-US/docs/Web/API/URL
     return baseURL ? new URL(requestedUrl, baseURL).href : requestedUrl;
 }
-
-// // our module cache
-// const loadedModules = {};
 
 class Module {
 
@@ -124,11 +121,11 @@ class Module {
 
 // allows modules loaded by other means to be referenced by all
 export function addKnownModule(ref, module, resolveUrl = defaultUrlResolver) {
+
     // store name as it would be resolved so if different relative URLS point to same module,
     // that module is loaded only once
-    const name = resolveUrl(ref);
-    //loadedModules[name] = new Module({name, module});
 
+    const name = resolveUrl(ref);
     Module.addModule(name, new Module({name, module}))
 }
 
@@ -148,7 +145,7 @@ export default async function loadModule(moduleRequestUrl, {baseUrl = window.loc
 
         const actualModuleUrl = urlResolver(moduleRequestUrl, baseUrl);
 
-        const module = Module.getModule(actualModuleUrl);// loadedModules[actualModuleUrl] || (loadedModules[actualModuleUrl] = new Module({name: actualModuleUrl}));
+        const module = Module.getModule(actualModuleUrl);
 
         if (module.isLoaded) {
             resolve(module); // modules are loaded once, then reused
@@ -161,15 +158,11 @@ export default async function loadModule(moduleRequestUrl, {baseUrl = window.loc
             module.resolveMe = () => resolve(module);
 
             try {
-                const m = await download(actualModuleUrl); // do redirects matter for relative URLs? if redirected once, will redirect again for subs, right?
-                // const baseUrlForSubDeps = m.responseURL; // any deps in this module (with a relative url) are relative to this base url
-                // //if (baseUrlForSubDeps !== actualModuleUrl)
-                // loadedModules[baseUrlForSubDeps] = module; // may be yet another reference to that module
-
-                //const subDepResolution = {baseUrl: baseUrlForSubDeps, globals, urlResolver};
-                const subDepResolution = {baseUrl: actualModuleUrl, globals, urlResolver};
-
+                const m = await download(actualModuleUrl);
                 const code = m.data; // may be AMD/UMD or CommonJS: we don't know yet
+
+                // when resolving sub-dependencies
+                const subDepResolution = {baseUrl: actualModuleUrl, globals, urlResolver};
 
                 const amdProxy = { // for amd modules
                     define: amdDefine,
