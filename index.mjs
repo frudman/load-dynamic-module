@@ -59,6 +59,11 @@ function defaultUrlResolver(requestedUrl, baseURL) {
     return baseURL ? new URL(requestedUrl, baseURL).href : requestedUrl;
 }
 
+// we keep the 'private static' field loadedModules as a separate const because,
+// even if we could have it as a class field (es10+?) and build it using @babel/plugin-proposal-class-properties, 
+// bundlephobia (https://bundlephobia.com/result?p=load-dynamic-module) doesn't seem
+// to recognize that plugin or the build steps (returns with packaging error)
+
 const loadedModules = {};
 class Module {
 
