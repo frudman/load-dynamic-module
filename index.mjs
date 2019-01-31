@@ -59,16 +59,19 @@ function defaultUrlResolver(requestedUrl, baseURL) {
     return baseURL ? new URL(requestedUrl, baseURL).href : requestedUrl;
 }
 
+const loadedModules = {};
 class Module {
 
-    static loadedModules = {}; 
+    // static loadedModules = {}; 
 
     static getModule(name) {
-        return Module.loadedModules[name] || (Module.loadedModules[name] = new Module({name}));
+        //return Module.loadedModules[name] || (Module.loadedModules[name] = new Module({name}));
+        return loadedModules[name] || (loadedModules[name] = new Module({name}));
     }
 
     static addModule(name, module) {
-        Module.loadedModules[name] = new Module({name, module});
+        //Module.loadedModules[name] = new Module({name, module});
+        loadedModules[name] = new Module({name, module});
     }
 
     constructor({name, module} = {}) {
