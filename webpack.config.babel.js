@@ -10,7 +10,7 @@
 // this file implicitly uses babel.config.js for its babel configuration
 
 // webpack helper
-import { genCombinations } from '../freddy-javascript-utils';///utils.js';// replace with 'tidbits' when finalized;
+import { genCombinations } from '../freddy-javascript-utils'; ///utils.js';// replace with 'tidbits' when finalized;
 
 // "maintained" minimizer for webpack (from https://github.com/terser-js/terser)
 import TerserPlugin from 'terser-webpack-plugin';
