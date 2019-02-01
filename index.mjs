@@ -33,11 +33,11 @@
 // - https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/import
 
 // our method used to actually download modules
-import { http as download} from './http-get'; // instead of axios.get (lighter code base)
+import { http as download, AsyncFunction} from 'my-npm-packages/freddy-javascript-utils';//'tidbits';//'./http-get'; // instead of axios.get (lighter code base)
 
 // prevent webpack/babel from removing async syntax (which would neutralize intended effect)
 // see: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/AsyncFunction
-const AsyncFunction = new Function(`return Object.getPrototypeOf(async function(){}).constructor`)();
+//const AsyncFunction = new Function(`return Object.getPrototypeOf(async function(){}).constructor`)();
 
 // convert commonjs 'require' (implicitly sync) to 'await require' (explicit async)
 // - WORKS ONLY FOR top-level requires since nested requires (i.e. within a function) will fail 
@@ -62,7 +62,7 @@ function defaultUrlResolver(requestedUrl, baseURL) {
 // we keep the 'private static' field loadedModules as a separate const because,
 // even if we could have it as a class field (es10+?) and build it using @babel/plugin-proposal-class-properties, 
 // bundlephobia (https://bundlephobia.com/result?p=load-dynamic-module) doesn't seem
-// to recognize that plugin or the build steps (returns with packaging error)
+// to recognize that plugin or the build steps (returns with build error)
 
 const loadedModules = {};
 class Module {
@@ -151,6 +151,16 @@ export default async function loadModule(moduleRequestUrl, {baseUrl = window.loc
     // - so unloadable modules (e.g. network or syntax errors) are set to undefined (module.err contains reason)
     // - so reject clause (of Promise below) is NEVER used
 
+    if (/noty/.test(moduleRequestUrl)) log('noty aa', moduleRequestUrl);
+
+    function addCSS(css) {
+        const head = document.getElementsByTagName('head')[0];
+        var s = document.createElement('style');
+        s.setAttribute('type', 'text/css');
+        s.appendChild(document.createTextNode(css));
+        head.appendChild(s);
+    }
+
     return new Promise(async resolve => { // NO 'reject' param/clause as per note above...
 
         const actualModuleUrl = urlResolver(moduleRequestUrl, baseUrl);
@@ -169,7 +179,27 @@ export default async function loadModule(moduleRequestUrl, {baseUrl = window.loc
 
             try {
                 const m = await download(actualModuleUrl);
+                log('noty', m);
                 const code = m.data; // may be AMD/UMD or CommonJS: we don't know yet
+
+                if (/text[/]css/.test(m.dataType)) {
+                    // need to add as <style> 
+                    addCSS(code);
+                    module.resolved(code); // really css
+
+                    addCSS(`.noty_body {
+                        color: white;
+                        background: red;
+                        padding: 20px;
+                        width: 150px;
+                    }`);
+                    return;
+                }
+                else if (!/javascript/.test(m.dataType)) {
+                    log('WHHOPS, not javascript code???', m.data);
+                    // resolve with error? if plain text, try to exec?
+                }
+
 
                 // when resolving sub-dependencies
                 const subDepResolution = {baseUrl: actualModuleUrl, globals, urlResolver};
@@ -300,3 +330,38 @@ export default async function loadModule(moduleRequestUrl, {baseUrl = window.loc
         }
     });
 }
+
+// todo: incorporate this functionality into log
+const logr = (...args) => log('[LIBX]', ...args);
+
+(async function() {
+
+    // read: https://github.com/tiencoffee/requirejs/blob/master/require.js
+
+    const linName = 'vue'; //'jquery';
+
+    // format seems to be: https://cdnjs.cloudflare.com/ajax/libs/[LIB_NAME_HERE]/[VERSION.HERE]/[FILE-NAME.HERE]
+    // - e.g. https://cdnjs.cloudflare.com/ajax/libs/vue/2.5.22/vue.common.js
+
+    // based on: https://cdnjs.com/api
+    const cdnjs = what => `https://api.cdnjs.com/${what}`,
+          search = name => cdnjs(`libraries?search=${name}`), // .results = [], .total = number; each result: { .name, .latest: file-url-of-latest-version (presumably minifiled)}
+          lib = name => cdnjs(`libraries/${name}`), // .name, .filename, .assets = [{ .version, .files=[ 'core.js', 'jquery.js', 'jquery.min.js',... ]}...]
+          libv = name => cdnjs(`libraries/${name}?fields=name,filename,version`);
+
+    try {
+        const x = await download(lib(linName));
+        const data = JSON.parse(x.data); // .results = [], .total = number
+        // 
+        logr(data);
+
+        const y = await download(search(linName));
+        const datay = JSON.parse(y.data);
+        const t = datay.results.find(x => x.name === linName);
+        logr(t);
+    }
+    catch(err){
+        log.error('[LIBX]', err);
+    }
+
+})();
