@@ -33,7 +33,7 @@
 // - https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/import
 
 // our method used to actually download modules
-import { http as download, AsyncFunction} from 'my-npm-packages/freddy-javascript-utils';///index.mjs';///utils.js';///xutils.js';//'tidbits';//'./http-get'; // instead of axios.get (lighter code base)
+import { http as download, AsyncFunction} from 'tidbits';//'my-npm-packages/freddy-javascript-utils';
 
 // prevent webpack/babel from removing async syntax (which would neutralize intended effect)
 // see: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/AsyncFunction
