@@ -5,41 +5,16 @@
 //  - npm update [regularly]
 //  - also: npm run pub [to publish new version]
 
-// this file named with .babel.js extension to ALLOW for import/exports below (i.e. es6 modules)
-// - MUST have @babel/register, @babel/plugin-transform-modules-commonjs
+// this file named with webpack.config.BABEL.JS extension to ALLOW for import/exports below
 // this file implicitly uses babel.config.js for its babel configuration
-
-// webpack helper
-import { genCombinations } from '../freddy-javascript-utils'; ///utils.js';// replace with 'tidbits' when finalized;
-
-// "maintained" minimizer for webpack (from https://github.com/terser-js/terser)
-import TerserPlugin from 'terser-webpack-plugin';
+// - READ: IMPORTANT NOTES in babel.config.js that explain how to:
+//   1- enable import/export to work in this file, at all
+//   2- to be able to import non-transpiled ES6 modules directly
 
 // helpers
 const log = console.log.bind(console); // shorthand
 const path = require('path')
-const resolve = (...dir) => path.join(__dirname, ...dir); // implies/expects this file to be at root of project
-
-
-const minimizerConfig = ecmaVersion => new TerserPlugin({
-    terserOptions: {
-        // from: https://github.com/terser-js/terser#minify-options-structure
-        // and: https://github.com/webpack-contrib/terser-webpack-plugin#terseroptions
-        // - basic settings below (many more available)
-
-        ecma: ecmaVersion,
-        mangle: true, // Note `mangle.properties` is `false` by default.
-
-        output: {
-            comments: false, // https://github.com/webpack-contrib/terser-webpack-plugin#remove-comments
-        },
-
-        ie8: false,
-        keep_classnames: undefined,
-        keep_fnames: false,
-        safari10: false,
-    },
-});
+const resolveDir = (...dir) => path.join(__dirname, ...dir); // implies/expects this file to be at root of project
 
 const webpackConfig = opt => ({
         mode: 'production',
@@ -60,9 +35,7 @@ const webpackConfig = opt => ({
                 // as per: https://webpack.js.org/contribute/writing-a-loader/
                 //  "loaders (in .use[arrays] below) are executed from last-to-first (e.g. right-to-left below)"
 
-                // don't forget to: npm install --save-dev @babel/core @babel/preset-env babel-loader @babel/plugin-proposal-class-properties 
-    
-                {  test: /\.m?js$/, use: 'babel-loader', exclude: /node_modules/ }, // what does exclude do here?    
+                {  test: /\.m?js$/, use: [ 'babel-loader'] }, 
             ]
         },
         
@@ -80,15 +53,39 @@ const webpackConfig = opt => ({
                 //      - note: NO leading squiggly]
     
                 // and while in dev for my npm modules
-                //'my-npm-packages': resolve('..'), 
-                'my-npm-packages': resolve('../../my-npm-packages'),
+                'my-npm-packages': resolveDir('..'),
 
             },
         },
     
 }); 
 
-//const buildConfigurations = Array.from(genCombinations({
+// "maintained" minimizer for webpack (from https://github.com/terser-js/terser)
+import TerserPlugin from 'terser-webpack-plugin';
+const minimizerConfig = ecmaVersion => new TerserPlugin({
+    terserOptions: {
+        // from: https://github.com/terser-js/terser#minify-options-structure
+        // and: https://github.com/webpack-contrib/terser-webpack-plugin#terseroptions
+        // - basic settings below (many more available)
+
+        ecma: ecmaVersion,
+        mangle: true, // Note `mangle.properties` is `false` by default.
+
+        output: {
+            comments: false, // https://github.com/webpack-contrib/terser-webpack-plugin#remove-comments
+        },
+
+        ie8: false,
+        keep_classnames: undefined,
+        keep_fnames: false,
+        safari10: false,
+    },
+});
+
+// genCombinations is a webpack helper
+// cannot use 'my-npm-packages/' here because not defined until later in this file: 
+// - MUST use either 'tidbits' or, while tidbits is in dev, '../freddy-javascript-utils'
+import { genCombinations } from 'tidbits'; // '../freddy-javascript-utils';
 export default Array.from(genCombinations({
         target: [ 
         { lib: 'umd', name: 'umd', },
@@ -98,5 +95,3 @@ export default Array.from(genCombinations({
     minimize: [ false, true ],
     ecma: [ 5, 6 ],//, 7, 8],
 })).map(webpackConfig);
-
-//module.exports = buildConfigurations;
