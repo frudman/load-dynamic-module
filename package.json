@@ -35,7 +35,7 @@
   ],
   "author": "Frederic Rudman",
   "license": "ISC",
-  "peerDependencies": {
+  "dependencies": {
     "tidbits": "^1.0.19"
   },
   "devDependencies": {
@@ -49,7 +49,7 @@
     "@babel/register": "^7.0.0",
     "@babel/runtime": "^7.3.1",
     "babel-loader": "^8.0.5",
-    "webpack": "^4.29.0",
+    "webpack": "^4.29.1",
     "webpack-cli": "^3.2.1"
   }
 }

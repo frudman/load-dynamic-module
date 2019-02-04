@@ -247,15 +247,16 @@ class Module {
     }
 
     genAMDDefine(subDepResolution) {
+
+        const thisModule = this; // self ref for within amdDefine below
+
         // IMPORTANT: all AMD modules test for 'define.amd' being 'truthy'
         //            but some (e.g. lodash) ALSO check that "typeof define.amd == 'object'" so...
-        amdDefine.amd = {}; // ...use an object (truthy) NOT just 'true'
-
-        const thisModule = this;
+        defineMethod.amd = {}; // ...use an object (truthy) NOT just 'true'
 
         // keep track of whether or not our define method was actually called...
         var isAMD = false; // ...because if not called, likely NOT an AMD module
-        function amdDefine(...args) {
+        function defineMethod(...args) {
             isAMD = true; // yay!
 
             const moduleDefine = args.pop(); // always last param
@@ -312,7 +313,7 @@ class Module {
             });
         }
 
-        return { defineMethod: amdDefine, get isAMD() { return isAMD; } };
+        return { defineMethod, get isAMD() { return isAMD; } };
     }
 }
 
@@ -328,6 +329,9 @@ export function addKnownModule(ref, module, resolveUrl = defaultUrlResolver) {
 }
 
 const handlers = [
+    // each handler has:
+    // - .m, a regular expression test if handler applies to a particular type/content-type
+    // - .h, the handler that handles the content (e.g. loads it as css) then returns [possibly modified] content
     { 
         m: /css/i, 
         h: content => addCSS(content)
@@ -339,11 +343,12 @@ const handlers = [
 
     // keep for last because 'text/' is part of others (e.g. text/css)
     { 
-        m: /text|data/i, // catch all?
+        m: /text|data/i, // should we make this a catch all? (except for javascript)
         h: content => content
     },
 ];
 
+// todo: make it easier to enhance urlResolver & handlers (instead of overriding all, as per below)
 
 const mainConfig = {
     baseUrl: window.location.href, 
@@ -367,20 +372,24 @@ function addCSS(cssCode) {
     style.setAttribute('type', 'text/css');
     style.appendChild(document.createTextNode(cssCode));
     head.appendChild(style);
-    return cssCode; // purpose?
+    return cssCode; // just a cheap hack for css handler above :-)
 }
 
+// keep track of downloading/downloaded modules/dependencies
 const alreadyInProgress = {};
 
 async function privateLoader(config, ...args) {
 
-    // NO reject clause: will never fail (but there can be modules that are resolved to Error)
+    // NO REJECT CLAUSE: will never fail (but there can be modules that are resolved to Error)
+    // - so unloadable modules (e.g. network or syntax errors) are set to undefined (module.err contains reason)
+    // - so reject clause (of Promise below) is NEVER used
 
     return new Promise(resolveWhenReady => { 
 
         const {baseUrl, globals, urlResolver, handlers} = config; // extract config parms
 
-        const onload = (args.length && typeof args[args.length-1] === 'function') ? args.pop() : false;
+        // for when all is said & done...
+        const onReady = (args.length && typeof args[args.length-1] === 'function') ? args.pop() : undefined;
 
         const downloads = [];
         for (const dep of args) {
@@ -391,16 +400,15 @@ async function privateLoader(config, ...args) {
                       data = isData ? m[5] : '',
                       isHttpx = m && /https?/i.test(m[3]),
                       url = isData ? '' : isHttpx ? (m[3] + '://' + m[5]) : m[5],
-                      type = m[3]; 
+                      type = m[3]; // if explicit (else get from downloaded content's type)
 
                 if (url) { // DOWNLOAD DATA
                     const finalUrl = urlResolver(url, baseUrl);
 
                     // see if a module and if already there
                     const inProgress = alreadyInProgress[finalUrl];
-                    if (inProgress) {
-                        // wait for it (but no need to download it twice)
-                        downloads.push(inProgress);
+                    if (inProgress) { 
+                        downloads.push(inProgress); // just wait for it...
                     }
                     else {
                         downloads.push(alreadyInProgress[finalUrl] = download(finalUrl)
@@ -431,15 +439,18 @@ async function privateLoader(config, ...args) {
                         // in module, can test with 'dep instanceof Error'?
                     }
                     else {
-                        // handlers should NEVER find one for javascript because those must be handled in next step
+                        // handlers should NEVER find one for javascript because those must be handled in subsequent step
                         try {
                             const handler = handlers.find(hndlr => hndlr.m.test(dep.type)); 
                             dep.VALUE = handler ? handler.h(dep.data, dep) : dep.data;      
                         }
                         catch(err) {
-                            dep.VALUE = err;
+                            dep.VALUE = err; // really should not be here...
                         }
-                        dep.globalName && (dep.globalName = dep.VALUE);    
+
+                        // todo: maybe check (& invalidate) some important globals (e.g. xmlhttprequest, alert/confirm, console, document, ...)
+                        // although a module/plugin could always just assign directly...
+                        dep.globalName && (window[globalName] = dep.VALUE);    
                     }
                 }
 
@@ -448,31 +459,22 @@ async function privateLoader(config, ...args) {
                     if (/javascript/i.test(dep.type)) {
                         dep.VALUE = (await loadJavascriptModule(dep.finalUrl, dep.data)).module; // may already be resolved
                     }
-                    // else: should have been handled in first loop?
+                    // else: should have been handled in first loop, right?
                 }
 
-                // then: if onload, execute it
+                // finally, 
                 try {
-                    resolveWhenReady(onload && onload(...resolvedDeps.map(dep => dep.VALUE)));
+                    resolveWhenReady(onReady && onReady(...resolvedDeps.map(dep => dep.VALUE)));
                 }
                 catch(err) {
                     resolveWhenReady(err);
                 }
             })
 
-
-            // need baseUrl for sub-dependencies that use relative-urls: sub-deps are therefore relative to baseUrl
-
-            // IMPORTANT: baseUrl is ALSO the parent module's url: i.e. the module that needs this moduleRequestUrl
-
-            // IMPORTANT: loadModule NEVER FAILS, but/so:
-            // - so unloadable modules (e.g. network or syntax errors) are set to undefined (module.err contains reason)
-            // - so reject clause (of Promise below) is NEVER used
-
-
+        // method to load javascript modules in a controlled environment (i.e. using AsyncFunction)
         async function loadJavascriptModule(moduleUrl, moduleSourcecode) {
             
-            // code IS javascript BUT may be AMD/UMD or CommonJS: we don't know yet
+            // code is ALWAYS javascript BUT may be AMD/UMD or CommonJS: we don't know yet
 
             return new Promise(async resolveJSM => { // NO 'reject' param/clause as per note above...
 
@@ -488,11 +490,11 @@ async function privateLoader(config, ...args) {
                 else { // loading a new module
 
                     // set up what will happens when it's resolved
-                    module.resolveMe = () => resolveJSM(module); 
+                    module.resolveMe = () => resolveJSM(module);
 
                     try {
                         // when resolving sub-dependencies; FROM original configuration except for baseUrl
-                        const subDepResolution = {baseUrl: moduleUrl, globals, urlResolver};
+                        const subDepResolution = {baseUrl: moduleUrl, globals, urlResolver, handlers};
 
                         // will try it as an amd module
                         const AMD_MODULE = module.genAMDDefine(subDepResolution);
@@ -513,7 +515,7 @@ async function privateLoader(config, ...args) {
                             exports: cjsExports,
 
                             // resolve dep for CJS module
-                            require: async nameOrUrl => (await privateLoader(subDepResolution, nameOrUrl)).module,
+                            require: async nameOrUrl => (await privateLoader(subDepResolution, nameOrUrl)).module, // recursion here
                         }
 
                         // customize proxies & globals as needed
