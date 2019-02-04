@@ -1,6 +1,6 @@
 {
   "name": "load-dynamic-module",
-  "version": "1.0.41",
+  "version": "1.0.42",
   "description": "a browser-based loader for both AMD/UMD and CommonJS modules",
   "main": "index.mjs",
   "module": "index.mjs",
