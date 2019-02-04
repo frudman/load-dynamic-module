@@ -116,7 +116,7 @@
 */
 
 // our method used to actually download modules
-import { http as download, AsyncFunction } from 'my-npm-packages/freddy-javascript-utils';//'tidbits';
+import { http as download, AsyncFunction } from 'tidbits';//'my-npm-packages/freddy-javascript-utils';//'tidbits';
 
 // convert commonjs 'require' (implicitly sync) to 'await require' (explicit async)
 // - WORKS ONLY FOR top-level requires since nested requires (i.e. within a function) will fail 
