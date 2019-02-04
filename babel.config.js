@@ -56,6 +56,7 @@ module.exports = function(api) {
         
         ["@babel/preset-env", {
         
+            // tells Babel to leave modules alone! That way, Webpack's tree shaker can do its thing
             "modules": false, // false to NOT transform modules and, presumably, let webpack handle them (with tree-shaking)
         
             "targets": { 
