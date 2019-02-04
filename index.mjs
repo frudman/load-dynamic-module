@@ -34,9 +34,6 @@
 // - as of jan 21, 2019: edge=no, firefox=no, chrome=yes, safari=yes
 // - https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/import
 
-// todo: incorporate this functionality into log (i.e. generate a logger)
-const logr = (...args) => log('[LIBX]', ...args);
-
 /*
     url
     name=url // download and loads as css or json-param
@@ -305,7 +302,7 @@ class Module {
             // }
 
             // resolve dependencies
-            loadModulex(subDepResolution, ...externals, (...resolvedDeps) => {
+            privateLoader(subDepResolution, ...externals, (...resolvedDeps) => {
                 try {
                     thisModule.resolved(moduleDefine(...resolvedDeps.map(dep => dep.module))); // could fail (if not [correct] AMD)
                 }
@@ -356,8 +353,8 @@ const mainConfig = {
 };
 
 
-const publicLoader = loadModulex.bind(null, mainConfig); // llx is a function
-publicLoader.config = cfg => loadModulex.bind(null, Object.assign({}, mainConfig, cfg)); // another function
+const publicLoader = privateLoader.bind(null, mainConfig);
+publicLoader.config = cfg => privateLoader.bind(null, Object.assign({}, mainConfig, cfg)); // another function
 
 export default publicLoader;
 
@@ -375,7 +372,7 @@ function addCSS(cssCode) {
 
 const alreadyInProgress = {};
 
-async function loadModulex(config, ...args) {
+async function privateLoader(config, ...args) {
 
     // NO reject clause: will never fail (but there can be modules that are resolved to Error)
 
@@ -505,7 +502,7 @@ async function loadModulex(config, ...args) {
                             module: undefined,
                             exports: undefined,
                             require(ref) { throw new Error(`cannot 'require' in AMD module ${moduleUrl}:\n\try 'await requireAsync("${ref}"' instead`) },
-                            requireAsync: async nameOrUrl => (await loadModulex(subDepResolution, nameOrUrl)).module, // recursion here
+                            requireAsync: async nameOrUrl => (await privateLoader(subDepResolution, nameOrUrl)).module, // recursion here
                         };
 
                         // may also need to try it as a CJS module (if amd fails)
@@ -516,7 +513,7 @@ async function loadModulex(config, ...args) {
                             exports: cjsExports,
 
                             // resolve dep for CJS module
-                            require: async nameOrUrl => (await loadModulex(subDepResolution, nameOrUrl)).module,
+                            require: async nameOrUrl => (await privateLoader(subDepResolution, nameOrUrl)).module,
                         }
 
                         // customize proxies & globals as needed
