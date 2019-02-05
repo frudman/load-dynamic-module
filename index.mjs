@@ -251,7 +251,16 @@ class Module {
         // this.publicizeResolution();
 
         // this.resolveMe();
-        // delete this.resolveMe; // why not...
+         delete this.resolveMe; // IMPORTANT! used by isUnresolved 
+
+        if (this.alreadyResolved) {
+            this.alreadyResolved.push(m);
+            log('WHOOAAA, was already resolved', this.id, this.alreadyResolved);
+        }
+        else {
+            this.alreadyResolved = [m];
+        }
+
 
         // ...then, let dependents know
         log('OOOOO - RESOLVING', this.id, typeof this.waitingOnMe, this.waitingOnMe)
@@ -596,6 +605,7 @@ async function privateLoader(config, ...args) {
 
                     // set up what will happens when it's resolved
                     //module.resolveMe = () => resolveJSM(module);
+                    module.resolveMe = true;
                     module.dependsOnMe(() => resolveJSM(module)); // i should be the first in queue
 
                     try {
