@@ -164,7 +164,7 @@ const isCommonJS = code => /module[.]exports/.test(code);
 
 // convert a dependency reference to an http-gettable url
 // todo: conver to series of matches/resolver
-function defaultUrlResolver(requestedUrl, baseURL) {
+function xxdefaultUrlResolver(requestedUrl, baseURL) {
 
     // - if ([0] === '.') or ([0]==='/'&&[1]!=='/') it's relative to window.location.href
 
@@ -403,53 +403,64 @@ class Module {
     }
 }
 
-
 // allows modules loaded by other means to be referenced by all
-export function addKnownModule(ref, module, resolveUrl = defaultUrlResolver) {
+export function addKnownModule(ref, module, customResolvers = []) {
 
     // store name as it would be resolved so if different relative URLS point to same module,
     // that module is loaded only once
 
-    //const id = resolveUrl(ref);
-    //Module.
-    addModule(name, new Module({id: resolveUrl(ref), module}))
+    const id = customResolvers.concat(urlResolvers)
+                .find(resolver => resolver.t(ref))
+                    .r(ref); // resolve it (& becomes its id)
+
+    addModule(name, new Module({id, module}))
 }
 
-const handlers = [
-    // each handler has:
-    // - .m, a regular expression test if handler applies to a particular type/content-type
-    // - .h, the handler that handles the content (e.g. loads it as css) then returns [possibly modified] content
-    { 
-        // change m to m: dep => /css/i.test(dep.type),  a function is more flexible
-        // for javascript: use dep.initialVALUE || code.data to allow takeover
-        m: /css/i, 
-        h: content => addCSS(content)
-    },
-    { 
-        m: /json/i, 
-        h: content => JSON.parse(content) // ignore errors: will be handled later
-    },
+const urlResolvers = [
+    // r = requestUrl, b = baseUrl; return string if good, false otherwise
+    //(r,b) => /^(https?[:])?[/][/]/i.test(r) && r,
+    { t: (u,b) => /^(https?[:])?[/][/]/i.test(u), r: (u,b) => u, },
 
-    // keep for last because 'text/' is part of others (e.g. text/css)
-    { 
-        m: /text|data/i, // should we make this a catch all? (except for javascript)
-        h: content => content
-    },
+    { t: (u,b) => /^[a-z_$]/i.test(u), r: (u,b) => `https://cdn.jsdelivr.net/npm/${u}`, },
+    //(r,b) => /^[a-z_$]/i.test(r) && `https://cdn.jsdelivr.net/npm/${r}`, // a.k.a. a "bare import" in CJS parlance (i.e. /node_modules/...)
+        //return `https://unpkg.com/${requestedUrl}`; // simple name so use NPM (via unpkg)
+        //return `https://cdn.jsdelivr.net/npm/${requestedUrl}`; // simple name so use NPM (via unpkg)
+
+    // based on: https://developer.mozilla.org/en-US/docs/Web/API/URL
+    //(r,b) => b ? new URL(r, b).href : r,
+    { t: (u,b) => true, r: (u,b) => b ? new URL(u, b).href : u, },
 ];
 
-// todo: make it easier to enhance urlResolver & handlers (instead of overriding all, as per below)
+
+const loaders = [
+
+    // each {handler} has:
+    // - t: function that test if loader applies to this type of content
+    // - c: function that processes the content as needed (e.g. loads it as css); then it SHOULD return the [possibly modified] content
+
+    // custom loaders get added AHEAD of these so can always override loaders below
+
+    { t: t => /css/i.test(t), c: c => (addCSS(c), c) }, 
+    { t: t => /json/i.test(t), c: c => JSON.parse(c) }, // ignore parse errors: will be handled later
+
+    // catch all (so there's always a handler: makes for easier logic later)
+    { t: t => true, c: c => c } 
+];
 
 const mainConfig = {
     baseUrl: window.location.href, 
     globals: ()=>{}, 
-    urlResolver: defaultUrlResolver,
-    handlers,
+    urlResolvers,
+    loaders,
 };
 
 
 const publicLoader = privateLoader.bind(null, mainConfig);
-publicLoader.config = cfg => {
-    const fcn = privateLoader.bind(null, Object.assign({}, mainConfig, cfg)); // another function
+publicLoader.config = (cfg = {}) => {
+    const fcn = privateLoader.bind(null, Object.assign({}, mainConfig, cfg, {
+        loaders: (cfg.loaders||[]).concat(mainConfig.loaders),
+        urlResolvers: (cfg.urlResolvers||[]).concat(mainConfig.urlResolvers),
+    }));
     fcn.load = fcn; // so can chain in single call loadModule.config({...}).load(...)
     return fcn;
 }
@@ -465,7 +476,6 @@ function addCSS(cssCode) {
     style.setAttribute('type', 'text/css');
     style.appendChild(document.createTextNode(cssCode));
     head.appendChild(style);
-    return cssCode; // just a cheap hack for css handler above :-)
 }
 
 // keep track of downloading/downloaded modules/dependencies
@@ -495,7 +505,7 @@ async function privateLoader(config, ...args) {
 
     return new Promise(resolveWhenReady => { 
 
-        const {baseUrl, globals, urlResolver, handlers} = config; // extract config parms
+        const {baseUrl, globals, urlResolvers, loaders} = config; // extract config parms
 
         // for when all is said & done...
         const onReady = (args.length && typeof args[args.length-1] === 'function') ? args.pop() : undefined;
@@ -514,7 +524,7 @@ async function privateLoader(config, ...args) {
                       type = m[3]; // if explicit (else get from downloaded content's type)
 
                 if (url) { // DOWNLOAD DATA
-                    const finalUrl = urlResolver(url, baseUrl);
+                    const finalUrl = urlResolvers.find(rslvr => rslvr.t(url, baseUrl)).r(url, baseUrl);
 
                     // see if a module and if already there
                     const inProgress = alreadyInProgress[finalUrl];
@@ -533,7 +543,7 @@ async function privateLoader(config, ...args) {
                     }
                 }
                 else { // IMMEDIATE DATA
-                    downloads.push({ type, data, globalName, }); // may still pass through handlers
+                    downloads.push({ type, data, globalName, }); // may still pass through loaders
                 }
             }
             else { // ACTUAL OBJECT
@@ -552,8 +562,8 @@ async function privateLoader(config, ...args) {
                         // ALL deps come through here, INCLUDING javascript code
                         // to enable PRE-PROCESSING of source before loading
                         try {
-                            const handler = handlers.find(hndlr => hndlr.m.test(dep.type)); 
-                            dep.initialVALUE = handler ? handler.h(dep.data, dep) : dep.data;
+                            // loaders includes [MUST have] a catch-all so always a loader to be found
+                            dep.initialVALUE = loaders.find(loader => loader.t(dep.type)).c(dep.data); 
                         }
                         catch(err) {
                             dep.finalVALUE = err; // an error from its loader (e.g. syntax error)
@@ -627,7 +637,7 @@ async function privateLoader(config, ...args) {
 
                     try {
                         // when resolving sub-dependencies; FROM original configuration except for baseUrl
-                        const subDepResolution = {baseUrl: moduleUrl, globals, urlResolver, handlers};
+                        const subDepResolution = {baseUrl: moduleUrl, globals, urlResolvers, loaders};
 
                         // will try it as an amd module
                         const AMD_MODULE = module.genAMDDefine(subDepResolution);
@@ -637,12 +647,7 @@ async function privateLoader(config, ...args) {
                             module: undefined,
                             exports: undefined,
                             require(ref) { throw new Error(`cannot 'require' in AMD module ${moduleUrl}:\n\try 'await requireAsync("${ref}"' instead`) },
-                            requireAsync: async nameOrUrl => {
-                                const x = await privateLoader(subDepResolution, nameOrUrl); // always returns actual module (or err)
-                                //().module; // recursion here
-                                //log('req async')
-                                return x;//.module;
-                            }
+                            requireAsync: async nameOrUrl => await privateLoader(subDepResolution, nameOrUrl), // always returns actual module (or err)
                         };
 
                         // may also need to try it as a CJS module (if amd fails)
@@ -653,7 +658,6 @@ async function privateLoader(config, ...args) {
                             exports: cjsExports,
 
                             // resolve dep for CJS module
-                            //require: async nameOrUrl => (await privateLoader(subDepResolution, nameOrUrl)).module, // recursion here
                             require: async nameOrUrl => await privateLoader(subDepResolution, nameOrUrl), // recursion here
                         }
 
