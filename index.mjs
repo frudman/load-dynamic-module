@@ -2,22 +2,21 @@
 // NOT FULLY TESTED
 // NOT FULLY TESTED
 // NOT FULLY TESTED
-// NOT FULLY TESTED: especially when modules have conflicting/cyclical dependencies (seems to work so far but NOT FULLY TESTED)
+// NOT FULLY TESTED
 // NOT FULLY TESTED
 // NOT FULLY TESTED
 // NOT FULLY TESTED
 
 // you've been warned! :-)
 
-// PROBLEM: when resolving relative URLs into absolute URLs (by appending '/'):
-// if base = /noty & rel = ./lib/style.css, result is: /noty/lib/style.css
-// if base = /noty/file.js & rel = ./lib/style.css, result is: /noty/file.js/lib/style.css [ERROR]
-// if base = /noty/file.js & rel = ../lib/style.css, result MIGHT BE: /noty/lib/style.css [NEED TO TEST]
 
-
-// MUST DOCUMENT: GLOBALS allowed to be defined ahead of a module's initialialization
-// - can define custom globals
+// TO DOCUMENT: can define GLOBALS to better "sandbox" module initialization
 // - can 'protect' framework code: e.g. redefine window. or console. or alert/confirm
+
+// TO DOCUMENT: custom url resolvers
+// TO DOCUMENT: custom loaders (css, json, ...)
+
+// TO DOCUMENT: can load modules other than just javascript (text, json, css, objects, data)
 
 
 // read: https://developers.google.com/web/fundamentals/primers/modules 
@@ -33,6 +32,14 @@
 // dynamic import() is NOT SUPPORTED by most modern browsers:
 // - as of jan 21, 2019: edge=no, firefox=no, chrome=yes, safari=yes
 // - https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/import
+
+// once loaded, modules are reused
+// BUT, what happens if module is loaded with custom settings?
+// should that module be loadable again with different settings?
+// may want to reload an existing module but with different parameters (i.e. config)
+// - save source? retry if config now different then config then?
+
+
 
 /*
     loadModule has many similarities and some difference from AMD's define structure:
@@ -149,6 +156,30 @@
     - our loadModule allows for "manual define" to be done on-the-fly
 */
 
+// WHEN RESOLVING URLs:
+// MAJOR ISSUES with UNPKG CDN: was broken for a few days before/during Feb 4, 2019
+// (and a few times in prior months/years for a variety of reasons: bugs, upgrades, ...)
+
+// SO, we decided to use cdn.jsdelivr.net CDN instead
+// - documentation: https://www.jsdelivr.com/features
+
+// one benefit: automatically serves content WITHOUT redirects even when not specifying exact versions (i.e. server-side redirection)
+// another: add .min to cs/js files and will ALWAYS serve minified (if not already minified, jsdelivr will minify for you: may be slower initially)
+
+/* another alternative:
+    read: https://github.com/tiencoffee/requirejs/blob/master/require.js
+    - uses yet another CDN: cdnjs.cloudflare.com
+    - format seems to be: https://cdnjs.cloudflare.com/ajax/libs/[LIB_NAME_HERE]/[VERSION.HERE]/[FILE-NAME.HERE]
+    - e.g. https://cdnjs.cloudflare.com/ajax/libs/vue/2.5.22/vue.common.js
+
+    // based on: https://cdnjs.com/api
+    // const cdnjs = what => `https://api.cdnjs.com/${what}`,
+    //       search = name => cdnjs(`libraries?search=${name}`), // .results = [], .total = number; each result: { .name, .latest: file-url-of-latest-version (presumably minifiled)}
+    //       lib = name => cdnjs(`libraries/${name}`), // .name, .filename, .assets = [{ .version, .files=[ 'core.js', 'jquery.js', 'jquery.min.js',... ]}...]
+    //       libv = name => cdnjs(`libraries/${name}?fields=name,filename,version`);
+*/
+
+
 // our method used to actually download modules
 import { http as download, AsyncFunction } from 'tidbits';//'my-npm-packages/freddy-javascript-utils';//'tidbits';
 
@@ -161,49 +192,6 @@ const commonjsToAwaitRequire = cjs => cjs.replace(/\brequire\s*[(]/g, 'await req
 
 // quick way to see if code MIGHT be commonjs
 const isCommonJS = code => /module[.]exports/.test(code); 
-
-// convert a dependency reference to an http-gettable url
-// todo: conver to series of matches/resolver
-function xxdefaultUrlResolver(requestedUrl, baseURL) {
-
-    // - if ([0] === '.') or ([0]==='/'&&[1]!=='/') it's relative to window.location.href
-
-    // convert '//url...' to 'https://url...'
-    // most (all?) browsers will do that conversion implicitly: should we comment out?
-    //requestedUrl = requestedUrl.replace(/^[/][/]/, location.protocol + '//'); // location.protocol includes a trailing ':'
-
-    if (/^(https?[:])?[/][/]/i.test(requestedUrl)) 
-        return requestedUrl; // explicit url so leave it alone
-
-    // MAJOR ISSUES with UNPKG CDN: was broken for a few days before/during Feb 4, 2019
-    // (and a few times in prior months/years for a variety of reasons: bugs, upgrades, ...)
-
-    // SO, we decided to use cdn.jsdelivr.net CDN instead
-    // - documentation: https://www.jsdelivr.com/features
-
-    // one benefit: automatically serves content WITHOUT redirects even when not specifying exact versions (i.e. server-side redirection)
-    // another: add .min to cs/js files and will ALWAYS serve minified (if not already minified, jsdelivr will minify for you: may be slower initially)
-
-    /* another alternative:
-        read: https://github.com/tiencoffee/requirejs/blob/master/require.js
-        - uses yet another CDN: cdnjs.cloudflare.com
-        - format seems to be: https://cdnjs.cloudflare.com/ajax/libs/[LIB_NAME_HERE]/[VERSION.HERE]/[FILE-NAME.HERE]
-        - e.g. https://cdnjs.cloudflare.com/ajax/libs/vue/2.5.22/vue.common.js
-
-        // based on: https://cdnjs.com/api
-        // const cdnjs = what => `https://api.cdnjs.com/${what}`,
-        //       search = name => cdnjs(`libraries?search=${name}`), // .results = [], .total = number; each result: { .name, .latest: file-url-of-latest-version (presumably minifiled)}
-        //       lib = name => cdnjs(`libraries/${name}`), // .name, .filename, .assets = [{ .version, .files=[ 'core.js', 'jquery.js', 'jquery.min.js',... ]}...]
-        //       libv = name => cdnjs(`libraries/${name}?fields=name,filename,version`);
-    */
-
-    if (/^[a-z_$]/i.test(requestedUrl)) // a.k.a. a "bare import" in CJS parlance (i.e. /node_modules/...)
-        //return `https://unpkg.com/${requestedUrl}`; // simple name so use NPM (via unpkg)
-        return `https://cdn.jsdelivr.net/npm/${requestedUrl}`; // simple name so use NPM (via unpkg)
-
-    // based on: https://developer.mozilla.org/en-US/docs/Web/API/URL
-    return baseURL ? new URL(requestedUrl, baseURL).href : requestedUrl;
-}
 
 // very crude means of extracting an extension; also, dot is not included; and another thing... :-)
 const extension = str => (str||'').split('.').pop(); 
@@ -222,7 +210,7 @@ const loadedModules = {};
 const getModule = id => loadedModules[id] || (loadedModules[id] = new Module({id})); 
 const addModule = (id, module) => loadedModules[id] = new Module({id, module});
 
-// log('PPPPP', typeof Error, Error instanceof Error, new Error('dd') instanceof Error, typeof new Error('da'), Error instanceof class abc{}, typeof class abcx{})
+// DownloadError & ModuleLoadError add to code size but can really help identify dynamic loading problems
 
 class DownloadError extends Error {
     constructor(msg, err) { 
@@ -230,8 +218,6 @@ class DownloadError extends Error {
         this.downloadError = err;
     }
 }
-//const DownloadError = (msg, downloadError) => Object.assign(new Error(msg), {downloadError});
-//const ModuleLoadError = (msg, ...loadErrors) => Object.assign(new Error(msg), {loadErrors});
 
 class ModuleLoadError extends Error {
     constructor(msg, ...errs) { 
@@ -247,51 +233,32 @@ class Module {
     constructor({id, module} = {}) {
         id && (this.id = id); // its source URL
         module && (this.module = module); // DON'T SET IT unless there's a value there
+        this.waitingOnMe = [];
     }
 
-    get isLoaded() { return 'module' in this };//|| 'err' in this; }// this.module || this.err; }
+    get isLoaded() { return 'module' in this };
     get isUnresolved() { return !this.isLoaded && !!this.resolveMe; }
 
     // maybe just always resolve (either module or err, no need to differentiate?)
 
     resolved(m) {
-        this.module = m; 
+        this.module = m; // m can be an actual module OR an Error if loading failed
 
-        // UNCOMMENT to give users a hint
+        // UNCOMMENT to give users a hint of a likely issue when loading CJS modules
         // if (m instanceof Error && m.name === 'SyntaxError' && /await.+async.+function/i.test(m.message || ''))
         //     m.message = `${this.id} may be CJS module with nested requires\n\t(nested requires must be inside async functions)\n\toriginal error: ${m.message}`)
         
         // this.publicizeResolution();
 
-        this.resolveMe();
-        delete this.resolveMe; // why not...
+        // this.resolveMe();
+        // delete this.resolveMe; // why not...
 
         // ...then, let dependents know
-        (this.waitingOnMe || []).forEach(resolveDep => resolveDep());
-        delete this.waitingOnMe; // why not...
+        log('OOOOO - RESOLVING', this.id, typeof this.waitingOnMe, this.waitingOnMe)
+        this.waitingOnMe.forEach(resolveDep => resolveDep());
+        //delete this.waitingOnMe; // why not...
+        //log('OOOOO - deleted', this.id, typeof this.waitingOnMe)
     }
-
-    // resolvedWithError(err) {
-    //     this.err = err;
-
-    //     // try to give a friendly hint: e.g. from chrome: 'await is only valid in async function'
-    //     if (err.name === 'SyntaxError' && /await.+async.+function/i.test(err.message || ''))
-    //         console.warn(`${this.id} may be CJS module with nested requires\n\t(nested requires must be inside async functions)`)
-    //     else
-    //         console.error(`${this.id} module was not loaded`, err);
-
-    //     this.publicizeResolution();
-    // }
-
-    // publicizeResolution() {
-    //     // first...
-    //     this.resolveMe();
-    //     delete this.resolveMe; // why not...
-
-    //     // ...then, let dependents know
-    //     (this.waitingOnMe || []).forEach(resolveDep => resolveDep());
-    //     delete this.waitingOnMe; // why not...
-    // }
 
     dependsOnMe(resolveDependent) {
 
@@ -309,12 +276,13 @@ class Module {
         //    - BUT, in case where no ACTUAL errors (which should be ALL of the time)
         //      - it's the FASTEST! EASIEST! SIMPLEST!
         
-        const deps = this.waitingOnMe || (this.waitingOnMe = []);
+        const deps = this.waitingOnMe;// || (this.waitingOnMe = []);
         deps.push(resolveDependent);
 
         // method 2, as per above
         if (deps.length > LONGEST_LIKELY_DEPENDENCY_CHAIN)
-            this.resolved(new Error(`likely cycle in module resolution for ${this.id} (depth=${deps.length})`));
+            //this.resolved(new Error(`likely cycle in module resolution for ${this.id} (depth=${deps.length})`));
+            throw new Error(`likely cycle in module resolution for ${this.id} (depth=${deps.length})`);
     }
 
     genAMDDefine(subDepResolution) {
@@ -329,6 +297,8 @@ class Module {
         var isAMD = false; // ...because if not called, likely NOT an AMD module
         function defineMethod(...args) {
             isAMD = true; // yay!
+
+            // at this point we know we're in an AMD module since this define method was called from module source code
 
             const moduleDefine = args.pop(); // always last param
             if (typeof moduleDefine !== 'function') 
@@ -366,35 +336,34 @@ class Module {
             }
 
 
-            // this is the module's name (as module author wants it defined) [we're not using it here: code is for reference only]
+            // BELOW (commented out): this is the module's name (as module author wants it defined) 
+            // - [we're not using it here: code is for reference only]
             // if (args.length === 1 && typeof args[0] === 'string') { ...UNUSED for now...
             //     // use it? 
             //     // maybe set option to use only URLs, URLs AND named defines, or just named defines (if no name, use url)
             //     // to consider: add option in case of conflicts: replace with newer/last-loaded, remove both, keep first (e.g. different url but same name)
             // }
 
-            // at this point we know we're in an AMD module since this define method was called from module source code
-
             // resolve dependencies
             privateLoader(subDepResolution, ...externals, async (...resolvedDeps) => {
-                try {
-
-                    // IF ANY resolvedDeps are ERRORS, do NOT execute define method
-                    const errs = resolvedDeps.filter(dep => dep instanceof Error);
-                    if (errs.length > 0) {
-                        thisModule.resolved(new ModuleLoadError(`AMD Define method not executed because of failed dependencies`, ...errs));
-                    }
-                    else {
-                        //thisModule.resolved(moduleDefine(...resolvedDeps.map(dep => dep.module))); // could fail (if not [correct] AMD)
-                        //log('AMD DEFINE private loading', ...resolvedDeps, ';;;');
-                        //const xx = await moduleDefine(...resolvedDeps); // for an AMD, resulting/defined module is RESULT of function
-                        //log('AMD DEFINE private loading - after defined', xx || "NOTHING_NADA", ';;;');
-                        thisModule.resolved(await moduleDefine(...resolvedDeps)); // could fail (if not [correct] AMD)
-                    }
+                const errs = resolvedDeps.filter(dep => dep instanceof Error);
+                if (errs.length > 0) {
+                    // resolved dependencies ERRORS will PREVENT AMD Define method from executing
+                    // - that's a big difference between AMD modules and ours
+                    //thisModule.resolved(new ModuleLoadError(`AMD Define method not executed because of failed dependencies`, ...errs));
+                    throw new ModuleLoadError(`xAMD Define method not executed because of failed dependencies`, ...errs);
                 }
-                catch(err) {
-                    //log('AMD DEFINE private loading - ERROR', err);
-                    thisModule.resolved(new ModuleLoadError(`AMD Define method failed`, err)); // if not AMD, or some other error...
+                else {
+                    try {
+                        const tt = await moduleDefine(...resolvedDeps);
+                        log('INSIDE AMD, got bacl tt', thisModule.id, tt);
+                        thisModule.resolved(tt); // could fail (if not [correct] AMD)
+                        //return await moduleDefine(...resolvedDeps); // could fail (if not [correct] AMD)
+                    }
+                    catch(err) {
+                        //thisModule.resolved(new ModuleLoadError(`AMD Define method failed`, err)); // if not AMD, or some other error...
+                        throw new ModuleLoadError(`xAMD Define method failed`, err); // if not AMD, or some other error...
+                    }
                 }
             });
         }
@@ -417,26 +386,32 @@ export function addKnownModule(ref, module, customResolvers = []) {
 }
 
 const urlResolvers = [
-    // r = requestUrl, b = baseUrl; return string if good, false otherwise
-    //(r,b) => /^(https?[:])?[/][/]/i.test(r) && r,
+
+    // resolvers are executed from top-down: higher resolvers take precedence over lower ones
+    // custom resolvers get added AHEAD of these so can always override resolvers below
+
+    // for each {resolver}:
+    // - t for test; r for resolveUrl; u for url; b for baseUrl
+
+    // any absolute url is kept as is
     { t: (u,b) => /^(https?[:])?[/][/]/i.test(u), r: (u,b) => u, },
 
+    // name-only urls are considered NPM modules (very important note above about NPM-based CDNs)
     { t: (u,b) => /^[a-z_$]/i.test(u), r: (u,b) => `https://cdn.jsdelivr.net/npm/${u}`, },
-    //(r,b) => /^[a-z_$]/i.test(r) && `https://cdn.jsdelivr.net/npm/${r}`, // a.k.a. a "bare import" in CJS parlance (i.e. /node_modules/...)
-        //return `https://unpkg.com/${requestedUrl}`; // simple name so use NPM (via unpkg)
-        //return `https://cdn.jsdelivr.net/npm/${requestedUrl}`; // simple name so use NPM (via unpkg)
 
+    // our catch all (required for simpler logic later on)
     // based on: https://developer.mozilla.org/en-US/docs/Web/API/URL
-    //(r,b) => b ? new URL(r, b).href : r,
     { t: (u,b) => true, r: (u,b) => b ? new URL(u, b).href : u, },
 ];
 
-
 const loaders = [
 
-    // each {handler} has:
-    // - t: function that test if loader applies to this type of content
-    // - c: function that processes the content as needed (e.g. loads it as css); then it SHOULD return the [possibly modified] content
+    // loaders are executed from top-down: higher loaders take precedence over lower ones
+    // custom loaders get added AHEAD of these so can always override loaders below
+
+    // each {loaders} has:
+    // - t: function that TESTs if loader applies to this TYPE of content
+    // - c: function that processes the Content as needed (e.g. loads it as css); then it SHOULD return the [possibly modified] Content
 
     // custom loaders get added AHEAD of these so can always override loaders below
 
@@ -454,7 +429,6 @@ const mainConfig = {
     loaders,
 };
 
-
 const publicLoader = privateLoader.bind(null, mainConfig);
 publicLoader.config = (cfg = {}) => {
     const fcn = privateLoader.bind(null, Object.assign({}, mainConfig, cfg, {
@@ -465,9 +439,11 @@ publicLoader.config = (cfg = {}) => {
     return fcn;
 }
 
+// Our main export --------------
 export default publicLoader;
 
-addKnownModule('load-dynamic-module', publicLoader); // self: trivial case
+// and while we're at it...
+addKnownModule('load-dynamic-module', publicLoader);
 
 
 function addCSS(cssCode) {
@@ -483,12 +459,12 @@ const alreadyInProgress = {};
 
 async function privateLoader(config, ...args) {
 
-    // each arg is a module (except maybe last arg)
+    // each arg is a module (except maybe the last arg)
     //  - arg can be a string or not
     //      - if it's a string, it's loaded as per below
     //      - if it's not a string, the module's value is that arg
     //          - only sensical purpose for this is there is an onReady function as last param
-    //  - if LAST ARG is a function:
+    //  - if it's the LAST ARG and it's a function:
     //      - that's an OnReady() function executed after all other modules are loaded
     //      - loaded mods are passed to that function
     //      - result of privateLoader is result from that function
@@ -497,11 +473,8 @@ async function privateLoader(config, ...args) {
     // if 2 or more args, loaded modules are returned as an array
 
     // NO REJECT CLAUSE: will never fail (but there can be modules that are resolved to Error)
-    // - so unloadable modules (e.g. network or syntax errors) are set to undefined (module.err contains reason)
+    // - so unloadable modules (e.g. network or syntax errors) are set to the ERROR that made them fail (can test for module instanceof Error)
     // - so reject clause (of Promise below) is NEVER used
-
-    // ALWAYS returns an actual module or err
-
 
     return new Promise(resolveWhenReady => { 
 
@@ -521,10 +494,10 @@ async function privateLoader(config, ...args) {
                       data = isData ? m[5] : '',
                       isHttpx = /https?/i.test(m[3]),
                       url = isData ? '' : isHttpx ? (m[3] + '://' + m[5]) : m[5],
-                      type = m[3]; // if explicit (else get from downloaded content's type)
+                      type = m[3]; // if explicit (here), takes precedence over downloaded content-type
 
                 if (url) { // DOWNLOAD DATA
-                    const finalUrl = urlResolvers.find(rslvr => rslvr.t(url, baseUrl)).r(url, baseUrl);
+                    const finalUrl = urlResolvers.find(resolver => resolver.t(url, baseUrl)).r(url, baseUrl);
 
                     // see if a module and if already there
                     const inProgress = alreadyInProgress[finalUrl];
@@ -553,44 +526,33 @@ async function privateLoader(config, ...args) {
 
         Promise.all(downloads)
             .then(async resolvedDeps => { // an array
-                // first, load all non-js dependencies
                 for (const dep of resolvedDeps) {
                     if (!('finalVALUE' in dep)) { 
-                        // not already set (note: we test for actual presence (not just test for dep.finalVALUE)
-                        // since it may have been resolved using a 'falsey' value)
+                        // not already set [note: we test for actual presence (not just test for dep.finalVALUE)
+                        // since it may have been resolved using a 'falsey' value]
 
-                        // ALL deps come through here, INCLUDING javascript code
-                        // to enable PRE-PROCESSING of source before loading
                         try {
                             // loaders includes [MUST have] a catch-all so always a loader to be found
-                            dep.initialVALUE = loaders.find(loader => loader.t(dep.type)).c(dep.data); 
+                            const initialVALUE = loaders.find(loader => loader.t(dep.type)).c(dep.data); // [pre-]process
+
+                            if (/javascript/i.test(dep.type)) {
+                                // may already be resolved; NEVER FAILS, but may have error
+                                dep.finalVALUE = (await loadJavascriptModule(dep.finalUrl, initialVALUE)).module; 
+                            }
+                            else 
+                                dep.finalVALUE = initialVALUE; // now final forever
+
+                            // NOW, can assign to global (if need be)
+                            // todo: maybe check (& invalidate) some important globals (e.g. xmlhttprequest, alert/confirm, console, document, ...)
+                            // although a module/plugin could always just assign directly...
+                            dep.globalName && (window[globalName] = dep.finalVALUE);
+
+                            // delete all keys now that we have a final value
+                            Object.keys(dep).forEach(k => !/finalVALUE/.test(k) && delete dep[k]);
                         }
                         catch(err) {
                             dep.finalVALUE = err; // an error from its loader (e.g. syntax error)
                         }
-                    }
-                }
-
-                // may want to reload an existing module but with different parameters (i.e. config)
-                // - save source? retry if config now different then config then?
-
-                // next, do all js deps (modules)
-                for (const dep of resolvedDeps) {
-                    if (!('finalVALUE' in dep)) { 
-                        if (/javascript/i.test(dep.type)) {
-                            // may already be resolved; NEVER FAILS, but may have error
-                            dep.finalVALUE = (await loadJavascriptModule(dep.finalUrl, dep.initialVALUE)).module; 
-                        }
-                        else 
-                            dep.finalVALUE = dep.initialVALUE; // now final forever
-
-                        // NOW, can assign to global (if need be)
-                        // todo: maybe check (& invalidate) some important globals (e.g. xmlhttprequest, alert/confirm, console, document, ...)
-                        // although a module/plugin could always just assign directly...
-                        dep.globalName && (window[globalName] = dep.finalVALUE);
-
-                        // delete all keys now that we have a final value
-                        Object.keys(dep).forEach(k => !/finalVALUE/.test(k) && delete dep[k]);
                     }
                 }
 
@@ -612,12 +574,12 @@ async function privateLoader(config, ...args) {
         // method to load javascript modules in a controlled environment (i.e. using AsyncFunction)
         async function loadJavascriptModule(moduleUrl, moduleSourcecode) {
             
-            // code is ALWAYS javascript BUT may be AMD/UMD or CommonJS: we don't know yet
+            // moduleSourcecode is ALWAYS javascript BUT we don't know yet if it's AMD/UMD or CommonJS
 
-            // NEVER FAILS but module may "resolve" to an Error
-            // NO 'reject' param/clause as per note above...
+            // loadJavascriptModule NEVER FAILS but module may "resolve" to an Error
+            // - so NO 'reject' param/clause as per note above...
 
-            // returns a module object with {.module, .err, .otherStuff}
+            // returns a module object with {.module, .otherStuff}
 
             return new Promise(async resolveJSM => { 
 
@@ -628,15 +590,16 @@ async function privateLoader(config, ...args) {
                     resolveJSM(module); // modules are loaded once, then reused
                 }
                 else if (module.isUnresolved) {
-                    module.dependsOnMe(() => resolveJSM(module)); // queue request
+                    module.dependsOnMe(() => resolveJSM(module)); // queue request (let it know that I need to know when it's ready)
                 }
                 else { // loading a new module
 
                     // set up what will happens when it's resolved
-                    module.resolveMe = () => resolveJSM(module);
+                    //module.resolveMe = () => resolveJSM(module);
+                    module.dependsOnMe(() => resolveJSM(module)); // i should be the first in queue
 
                     try {
-                        // when resolving sub-dependencies; FROM original configuration except for baseUrl
+                        // when resolving sub-dependencies, use same config except baseUrl which now reflects asking module
                         const subDepResolution = {baseUrl: moduleUrl, globals, urlResolvers, loaders};
 
                         // will try it as an amd module
@@ -646,8 +609,8 @@ async function privateLoader(config, ...args) {
                             define: AMD_MODULE.defineMethod,
                             module: undefined,
                             exports: undefined,
-                            require(ref) { throw new Error(`cannot 'require' in AMD module ${moduleUrl}:\n\try 'await requireAsync("${ref}"' instead`) },
-                            requireAsync: async nameOrUrl => await privateLoader(subDepResolution, nameOrUrl), // always returns actual module (or err)
+                            require(ref) { throw new Error(`cannot 'require' in AMD module ${moduleUrl}:\n\ttry 'await requireAsync("${ref}"' instead`) },
+                            requireAsync: async nameOrUrl => await privateLoader(subDepResolution, nameOrUrl), // always returns actual module/err; recursion here
                         };
 
                         // may also need to try it as a CJS module (if amd fails)
@@ -673,11 +636,13 @@ async function privateLoader(config, ...args) {
 
                         try { 
                             // pass #1: try it as an AMD module first
-                            await initModule(...Object.values(amdProxy));
+                            const zz = await initModule(...Object.values(amdProxy));
+                            log('GOT AMD RESPONSE for', moduleUrl, zz);
+                            //module.resolved(zz);
                         }
                         catch(err) {
                             // if was an AMD, consider it resolved (though with errors)
-                            if (AMD_MODULE.isAMD) log('RESOLved mod WITH ERRORS', moduleUrl, err);
+                            log('ERROR CAGHT for AMD: already handled?', AMD_MODULE.isAMD, err);
                             AMD_MODULE.isAMD && module.resolved(err);
                             
                             // else, fall through and see if it works with CJS below
@@ -685,16 +650,22 @@ async function privateLoader(config, ...args) {
 
                         if (!AMD_MODULE.isAMD) {
                             if (isCommonJS(moduleSourcecode)) { 
+                                log('TRYING for CJS CODE', moduleUrl);
                                 // pass #2: yes, less efficient (since 2 passes) but allows for both modes (i.e. amd/umd and cjs) to be imported
                                 // BIG CAVEAT: only top-level requires will be honored in cjs; nested requires (within non-async functions) will fail
                                 
                                 const awaitableCode = commonjsToAwaitRequire(moduleSourcecode);
                                 const commonjsInit = new AsyncFunction(...Object.keys(cjsProxy), awaitableCode);
-                                await commonjsInit(...Object.values(cjsProxy));
-                                module.resolved((cjsProxy.module || {}).exports || cjsExports);
+                                try {
+                                    await commonjsInit(...Object.values(cjsProxy));
+                                    module.resolved((cjsProxy.module || {}).exports || cjsExports);
+                                }
+                                catch(err) {
+                                    module.resolved(new ModuleLoadError(`Failed to load ${moduleUrl} as CJS module`, err));
+                                }
                             }
                             else {
-                                module.resolved(new Error('module seems to be neither AMD/UMD nor CommonJS'));
+                                module.resolved(new ModuleLoadError('module seems to be neither AMD/UMD nor CommonJS'));
                             }
                         }
                     }
