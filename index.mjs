@@ -35,6 +35,40 @@
 // - https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/import
 
 /*
+    loadModule has many similarities and some difference from AMD's define structure:
+
+    if called without a last-param onready function,
+        - all params treated as individual modules
+            - can load a single module: const mod = loadModule('mod-url');
+            - can load multiple modules: const [mod1, mod2, mod3] = await loadModule('mod1-url', 'mod2-url', 'mod3-url');
+        - each module is loaded ONLY ONCE
+            - ID for that module is its resolved url
+            - any further request for that module returns original result
+        - return for call is module (if single param) or array of modules (if 2 or more params)
+            - if array of modules, can be destructured as follows:
+                const [mod1, mod2, mod3] = await loadModule('mod1-url', 'mod2-url', 'mod3-url');
+        - loadeModule NEVER FAILS (await ALWAYS succeeds: no need to try/catch; catch clause will never execute)
+            - individual modules CAN be:
+                - undefined: if nothing is returned from their execution
+                - Error: if loading generates an error (either a download error or an execution error on load)
+                - actual module if all is well
+
+    - if last param is a function, it's considered an onReady-type function
+        - the function will be passed 1 parm for each of the prior arguments
+            - for example: 
+                - loadModule('mod1-url', 'mod2-url', 'mod3-url', (mod1,mod2,mod3) => { ...you code here...; return [mod1,mod2,mod3]; })
+                - loadModule('mod1-url', 'mod2-url', 'mod3-url', (...mods) => { ...you code here...; return ...mods; })
+                - loadModule('mod1-url', 'mod2-url', 'mod3-url', (...mods) => { ...you code here...; return [newModx, newMody]; })
+        - the "loaded" module will then be set from the RESULT of that function's execution
+        - if the function returns undefined (i.e. returns nothing)
+            - the module will then also be undefined (a valid value)
+        - if the function returns an array of "stuff" (including incoming loaded modules)
+            - the result could then be destructured as needed
+        - the function will be executed ALWAYS, even if some dep-mods fail
+            - that's different from define, which doesn't execute the function if any dependencies fail (RIGHT? TBV)
+*/
+
+/*
     url
     name=url // download and loads as css or json-param
     name=http://url // same as
@@ -121,12 +155,15 @@ import { http as download, AsyncFunction } from 'tidbits';//'my-npm-packages/fre
 // convert commonjs 'require' (implicitly sync) to 'await require' (explicit async)
 // - WORKS ONLY FOR top-level requires since nested requires (i.e. within a function) will fail 
 //   with a syntax error (unless that function itself was already marked async)
+// - also workd only with plain require() without intervening comments
+// - also works only without 'await require(' TODO: could actually check for this and leave it alone if already there
 const commonjsToAwaitRequire = cjs => cjs.replace(/\brequire\s*[(]/g, 'await require(');
 
 // quick way to see if code MIGHT be commonjs
 const isCommonJS = code => /module[.]exports/.test(code); 
 
 // convert a dependency reference to an http-gettable url
+// todo: conver to series of matches/resolver
 function defaultUrlResolver(requestedUrl, baseURL) {
 
     // - if ([0] === '.') or ([0]==='/'&&[1]!=='/') it's relative to window.location.href
@@ -168,7 +205,8 @@ function defaultUrlResolver(requestedUrl, baseURL) {
     return baseURL ? new URL(requestedUrl, baseURL).href : requestedUrl;
 }
 
-const extension = str => (str||'').split('.').pop(); // very crude; also, dot is not included
+// very crude means of extracting an extension; also, dot is not included; and another thing... :-)
+const extension = str => (str||'').split('.').pop(); 
 // a more "accurate" (or complete) method (but more code)
 //const extension = (str, keepDot = false) => ((str||'').match(/[.][^.]*$/)||[''])[0].substring(keepDot ? 0 : 1);
 
@@ -177,50 +215,54 @@ const extension = str => (str||'').split('.').pop(); // very crude; also, dot is
 // bundlephobia (https://bundlephobia.com/result?p=load-dynamic-module) doesn't seem
 // to recognize that plugin or the build steps (returns with build error)
 const loadedModules = {};
+// todo: change name to url OR ID where id can be a name or a url (for ref only so doens't matter, but same name for same module)
+// BUT: if can have same module ID with different results (i.e. module pre-processed on load and/or different globals)
+//      then what? new name for newer module? overwwrite old module? get explicit module name?
+//      if so, only need to keep source then re-compile...
+const getModule = id => loadedModules[id] || (loadedModules[id] = new Module({id})); 
+const addModule = (id, module) => loadedModules[id] = new Module({id, module});
+
+// log('PPPPP', typeof Error, Error instanceof Error, new Error('dd') instanceof Error, typeof new Error('da'), Error instanceof class abc{}, typeof class abcx{})
+
+class DownloadError extends Error {
+    constructor(msg, err) { 
+        super(msg);
+        this.downloadError = err;
+    }
+}
+//const DownloadError = (msg, downloadError) => Object.assign(new Error(msg), {downloadError});
+//const ModuleLoadError = (msg, ...loadErrors) => Object.assign(new Error(msg), {loadErrors});
+
+class ModuleLoadError extends Error {
+    constructor(msg, ...errs) { 
+        super(msg);
+        this.loadErrors = errs;
+    }
+}
 
 // cheap means to ensure no infinite loop while resolving dependencies
-const MAX_LIKELY_NUMBER_OF_DEPENDENTS = 20; 
+const LONGEST_LIKELY_DEPENDENCY_CHAIN = 20; // number of modules depending on me BEFORE I'm initially resolved
 class Module {
 
-    // static loadedModules = {}; 
-
-    static getModule(name) {
-        //return Module.loadedModules[name] || (Module.loadedModules[name] = new Module({name}));
-        return loadedModules[name] || (loadedModules[name] = new Module({name}));
+    constructor({id, module} = {}) {
+        id && (this.id = id); // its source URL
+        module && (this.module = module); // DON'T SET IT unless there's a value there
     }
 
-    static addModule(name, module) {
-        //Module.loadedModules[name] = new Module({name, module});
-        loadedModules[name] = new Module({name, module});
-    }
-
-    constructor({name, module} = {}) {
-        this.name = name; // its source URL
-        this.module = module;
-    }
-
-    get isLoaded() { return this.module || this.err; }
+    get isLoaded() { return 'module' in this };//|| 'err' in this; }// this.module || this.err; }
     get isUnresolved() { return !this.isLoaded && !!this.resolveMe; }
+
+    // maybe just always resolve (either module or err, no need to differentiate?)
 
     resolved(m) {
         this.module = m; 
-        this.publicizeResolution();
-    }
 
-    resolvedWithError(err) {
-        this.err = err;
+        // UNCOMMENT to give users a hint
+        // if (m instanceof Error && m.name === 'SyntaxError' && /await.+async.+function/i.test(m.message || ''))
+        //     m.message = `${this.id} may be CJS module with nested requires\n\t(nested requires must be inside async functions)\n\toriginal error: ${m.message}`)
+        
+        // this.publicizeResolution();
 
-        // try to give a friendly hint: e.g. from chrome: 'await is only valid in async function'
-        if (err.name === 'SyntaxError' && /await.+async.+function/i.test(err.message || ''))
-            console.warn(`${this.name} may be CJS module with nested requires\n\t(nested requires must be inside async functions)`)
-        else
-            console.error(`${this.name} module was not loaded`, err);
-
-        this.publicizeResolution();
-    }
-
-    publicizeResolution() {
-        // first...
         this.resolveMe();
         delete this.resolveMe; // why not...
 
@@ -229,21 +271,50 @@ class Module {
         delete this.waitingOnMe; // why not...
     }
 
+    // resolvedWithError(err) {
+    //     this.err = err;
+
+    //     // try to give a friendly hint: e.g. from chrome: 'await is only valid in async function'
+    //     if (err.name === 'SyntaxError' && /await.+async.+function/i.test(err.message || ''))
+    //         console.warn(`${this.id} may be CJS module with nested requires\n\t(nested requires must be inside async functions)`)
+    //     else
+    //         console.error(`${this.id} module was not loaded`, err);
+
+    //     this.publicizeResolution();
+    // }
+
+    // publicizeResolution() {
+    //     // first...
+    //     this.resolveMe();
+    //     delete this.resolveMe; // why not...
+
+    //     // ...then, let dependents know
+    //     (this.waitingOnMe || []).forEach(resolveDep => resolveDep());
+    //     delete this.waitingOnMe; // why not...
+    // }
+
     dependsOnMe(resolveDependent) {
 
-        // 2 ways to do this:
-        // - check for cycles: need to know dependent perent<-->child relationships for that
-        //      - most efficient, most "correct", most work, but only useful if cycles (which should never be the case, otherwise it's an error)
-        // - just allow for maximum number of dependents; if more, assume it's because of a cycle
-        //      - simplest implementation
-        //      - less efficient: runs extra cycles before notices error; and limit may be less than a legitimate case may have
-        //      - BUT, in case where no ACTUAL errors (most of the time; should be ALL of the time), FASTEST! EASIEST! SIMPLEST!
+        // Strategies to prevent infinite dependency loops (e.g. a --> b --> c --> a):
+        // 1) actually check for cycles: 
+        //    - would need to keep track of relationships between dependents (i.e. parent<-->child)
+        //    - most efficient, most "correct"
+        //    - most code/work
+        //    - and only useful if cycles do occur (which is an error so should be caught during dev)
+        // 2) just allow for a maximum number of dependents; if more are added, assume it's because of a cycle
+        //    - trivial implementation
+        //    - less efficient because if there is a cycle error, it will runs extra loops before error is raised
+        //    - selected limit should be high enough to make sure legitimate cases are not erroneously flagged
+        //        - which exacerbates earlier point (of being less efficient)
+        //    - BUT, in case where no ACTUAL errors (which should be ALL of the time)
+        //      - it's the FASTEST! EASIEST! SIMPLEST!
         
         const deps = this.waitingOnMe || (this.waitingOnMe = []);
         deps.push(resolveDependent);
 
-        if (deps.length > MAX_LIKELY_NUMBER_OF_DEPENDENTS)
-            this.resolvedWithError(new Error(`likely cycle in module resolution for ${this.name} (depth=${deps.length})`));
+        // method 2, as per above
+        if (deps.length > LONGEST_LIKELY_DEPENDENCY_CHAIN)
+            this.resolved(new Error(`likely cycle in module resolution for ${this.id} (depth=${deps.length})`));
     }
 
     genAMDDefine(subDepResolution) {
@@ -302,13 +373,28 @@ class Module {
             //     // to consider: add option in case of conflicts: replace with newer/last-loaded, remove both, keep first (e.g. different url but same name)
             // }
 
+            // at this point we know we're in an AMD module since this define method was called from module source code
+
             // resolve dependencies
-            privateLoader(subDepResolution, ...externals, (...resolvedDeps) => {
+            privateLoader(subDepResolution, ...externals, async (...resolvedDeps) => {
                 try {
-                    thisModule.resolved(moduleDefine(...resolvedDeps.map(dep => dep.module))); // could fail (if not [correct] AMD)
+
+                    // IF ANY resolvedDeps are ERRORS, do NOT execute define method
+                    const errs = resolvedDeps.filter(dep => dep instanceof Error);
+                    if (errs.length > 0) {
+                        thisModule.resolved(new ModuleLoadError(`AMD Define method not executed because of failed dependencies`, ...errs));
+                    }
+                    else {
+                        //thisModule.resolved(moduleDefine(...resolvedDeps.map(dep => dep.module))); // could fail (if not [correct] AMD)
+                        //log('AMD DEFINE private loading', ...resolvedDeps, ';;;');
+                        //const xx = await moduleDefine(...resolvedDeps); // for an AMD, resulting/defined module is RESULT of function
+                        //log('AMD DEFINE private loading - after defined', xx || "NOTHING_NADA", ';;;');
+                        thisModule.resolved(await moduleDefine(...resolvedDeps)); // could fail (if not [correct] AMD)
+                    }
                 }
                 catch(err) {
-                    thisModule.resolvedWithError(err); // if not AMD, or some other error...
+                    //log('AMD DEFINE private loading - ERROR', err);
+                    thisModule.resolved(new ModuleLoadError(`AMD Define method failed`, err)); // if not AMD, or some other error...
                 }
             });
         }
@@ -324,8 +410,9 @@ export function addKnownModule(ref, module, resolveUrl = defaultUrlResolver) {
     // store name as it would be resolved so if different relative URLS point to same module,
     // that module is loaded only once
 
-    const name = resolveUrl(ref);
-    Module.addModule(name, new Module({name, module}))
+    //const id = resolveUrl(ref);
+    //Module.
+    addModule(name, new Module({id: resolveUrl(ref), module}))
 }
 
 const handlers = [
@@ -333,6 +420,8 @@ const handlers = [
     // - .m, a regular expression test if handler applies to a particular type/content-type
     // - .h, the handler that handles the content (e.g. loads it as css) then returns [possibly modified] content
     { 
+        // change m to m: dep => /css/i.test(dep.type),  a function is more flexible
+        // for javascript: use dep.initialVALUE || code.data to allow takeover
         m: /css/i, 
         h: content => addCSS(content)
     },
@@ -359,7 +448,11 @@ const mainConfig = {
 
 
 const publicLoader = privateLoader.bind(null, mainConfig);
-publicLoader.config = cfg => privateLoader.bind(null, Object.assign({}, mainConfig, cfg)); // another function
+publicLoader.config = cfg => {
+    const fcn = privateLoader.bind(null, Object.assign({}, mainConfig, cfg)); // another function
+    fcn.load = fcn; // so can chain in single call loadModule.config({...}).load(...)
+    return fcn;
+}
 
 export default publicLoader;
 
@@ -380,9 +473,25 @@ const alreadyInProgress = {};
 
 async function privateLoader(config, ...args) {
 
+    // each arg is a module (except maybe last arg)
+    //  - arg can be a string or not
+    //      - if it's a string, it's loaded as per below
+    //      - if it's not a string, the module's value is that arg
+    //          - only sensical purpose for this is there is an onReady function as last param
+    //  - if LAST ARG is a function:
+    //      - that's an OnReady() function executed after all other modules are loaded
+    //      - loaded mods are passed to that function
+    //      - result of privateLoader is result from that function
+    //          - if result is undefined: should we just return the modules in first place?
+    // if only 1 arg, that module is returned
+    // if 2 or more args, loaded modules are returned as an array
+
     // NO REJECT CLAUSE: will never fail (but there can be modules that are resolved to Error)
     // - so unloadable modules (e.g. network or syntax errors) are set to undefined (module.err contains reason)
     // - so reject clause (of Promise below) is NEVER used
+
+    // ALWAYS returns an actual module or err
+
 
     return new Promise(resolveWhenReady => { 
 
@@ -394,11 +503,13 @@ async function privateLoader(config, ...args) {
         const downloads = [];
         for (const dep of args) {
             if (typeof dep === 'string') {
-                const m = dep.match(/(\w+[=])?(([a-z]+)([-]data)?[:!])?([^]+)/i), // [^] matches everything including newlines
-                      globalName = m && m[1] && m[1].slice(0, -1), // to be assigned as window.[globalName]
-                      isData = m && (/data/i.test(m[3]) || m[4]),
+                // since [^] matches everything (including newlines), m will ALWAYS match EVERY string
+                // so no need to test for m (as in m && ...)
+                const m = dep.match(/(\w+[=])?(([a-z]+)([-]data)?[:!])?([^]+)/i), 
+                      globalName = m[1] && m[1].slice(0, -1), // to be assigned as window.[globalName]
+                      isData = /data/i.test(m[3]) || m[4],
                       data = isData ? m[5] : '',
-                      isHttpx = m && /https?/i.test(m[3]),
+                      isHttpx = /https?/i.test(m[3]),
                       url = isData ? '' : isHttpx ? (m[3] + '://' + m[5]) : m[5],
                       type = m[3]; // if explicit (else get from downloaded content's type)
 
@@ -408,7 +519,7 @@ async function privateLoader(config, ...args) {
                     // see if a module and if already there
                     const inProgress = alreadyInProgress[finalUrl];
                     if (inProgress) { 
-                        downloads.push(inProgress); // just wait for it...
+                        downloads.push(inProgress); // wait for it; may already be downloaded
                     }
                     else {
                         downloads.push(alreadyInProgress[finalUrl] = download(finalUrl)
@@ -418,53 +529,70 @@ async function privateLoader(config, ...args) {
                                 globalName,
                                 finalUrl, // becomes base for relative-base sub-dependencies
                             }))
-                            .catch(err => ({downloadErr: err})));
+                            .catch(err => ({finalVALUE: new DownloadError(`module ${finalUrl} failed to download`, err)})));
                     }
                 }
                 else { // IMMEDIATE DATA
-                    downloads.push({ type, data, globalName, });
+                    downloads.push({ type, data, globalName, }); // may still pass through handlers
                 }
             }
             else { // ACTUAL OBJECT
-                downloads.push({ data: dep }); // all done
+                downloads.push({ finalVALUE: dep }); // all done
             }
         }
 
         Promise.all(downloads)
             .then(async resolvedDeps => { // an array
-                // first, do all non-js deps
+                // first, load all non-js dependencies
                 for (const dep of resolvedDeps) {
-                    if (dep.downloadErr) {
-                        dep.VALUE = dep.downloadErr; // is that a reasonable thing?
-                        // in module, can test with 'dep instanceof Error'?
-                    }
-                    else {
-                        // handlers should NEVER find one for javascript because those must be handled in subsequent step
+                    if (!('finalVALUE' in dep)) { 
+                        // not already set (note: we test for actual presence (not just test for dep.finalVALUE)
+                        // since it may have been resolved using a 'falsey' value)
+
+                        // ALL deps come through here, INCLUDING javascript code
+                        // to enable PRE-PROCESSING of source before loading
                         try {
                             const handler = handlers.find(hndlr => hndlr.m.test(dep.type)); 
-                            dep.VALUE = handler ? handler.h(dep.data, dep) : dep.data;      
+                            dep.initialVALUE = handler ? handler.h(dep.data, dep) : dep.data;
                         }
                         catch(err) {
-                            dep.VALUE = err; // really should not be here...
+                            dep.finalVALUE = err; // an error from its loader (e.g. syntax error)
                         }
-
-                        // todo: maybe check (& invalidate) some important globals (e.g. xmlhttprequest, alert/confirm, console, document, ...)
-                        // although a module/plugin could always just assign directly...
-                        dep.globalName && (window[globalName] = dep.VALUE);    
                     }
                 }
 
+                // may want to reload an existing module but with different parameters (i.e. config)
+                // - save source? retry if config now different then config then?
+
                 // next, do all js deps (modules)
                 for (const dep of resolvedDeps) {
-                    if (/javascript/i.test(dep.type)) {
-                        dep.VALUE = (await loadJavascriptModule(dep.finalUrl, dep.data)).module; // may already be resolved
+                    if (!('finalVALUE' in dep)) { 
+                        if (/javascript/i.test(dep.type)) {
+                            // may already be resolved; NEVER FAILS, but may have error
+                            dep.finalVALUE = (await loadJavascriptModule(dep.finalUrl, dep.initialVALUE)).module; 
+                        }
+                        else 
+                            dep.finalVALUE = dep.initialVALUE; // now final forever
+
+                        // NOW, can assign to global (if need be)
+                        // todo: maybe check (& invalidate) some important globals (e.g. xmlhttprequest, alert/confirm, console, document, ...)
+                        // although a module/plugin could always just assign directly...
+                        dep.globalName && (window[globalName] = dep.finalVALUE);
+
+                        // delete all keys now that we have a final value
+                        Object.keys(dep).forEach(k => !/finalVALUE/.test(k) && delete dep[k]);
                     }
-                    // else: should have been handled in first loop, right?
                 }
 
                 // finally, 
                 try {
-                    resolveWhenReady(onReady && onReady(...resolvedDeps.map(dep => dep.VALUE)));
+                    const mods = resolvedDeps.map(dep => dep.finalVALUE);
+                    if (onReady)
+                        resolveWhenReady(onReady(...mods)); // result is whatever the onReady returns...
+                    else if (resolvedDeps.length === 1)
+                        resolveWhenReady(mods[0]); // could be: undefined, module, or error
+                    else
+                        resolveWhenReady(mods); // an array
                 }
                 catch(err) {
                     resolveWhenReady(err);
@@ -476,10 +604,15 @@ async function privateLoader(config, ...args) {
             
             // code is ALWAYS javascript BUT may be AMD/UMD or CommonJS: we don't know yet
 
-            return new Promise(async resolveJSM => { // NO 'reject' param/clause as per note above...
+            // NEVER FAILS but module may "resolve" to an Error
+            // NO 'reject' param/clause as per note above...
+
+            // returns a module object with {.module, .err, .otherStuff}
+
+            return new Promise(async resolveJSM => { 
 
                 // get existing module (if already loaded), or creates new one
-                const module = Module.getModule(moduleUrl); 
+                const module = getModule(moduleUrl); 
 
                 if (module.isLoaded) {
                     resolveJSM(module); // modules are loaded once, then reused
@@ -504,7 +637,12 @@ async function privateLoader(config, ...args) {
                             module: undefined,
                             exports: undefined,
                             require(ref) { throw new Error(`cannot 'require' in AMD module ${moduleUrl}:\n\try 'await requireAsync("${ref}"' instead`) },
-                            requireAsync: async nameOrUrl => (await privateLoader(subDepResolution, nameOrUrl)).module, // recursion here
+                            requireAsync: async nameOrUrl => {
+                                const x = await privateLoader(subDepResolution, nameOrUrl); // always returns actual module (or err)
+                                //().module; // recursion here
+                                //log('req async')
+                                return x;//.module;
+                            }
                         };
 
                         // may also need to try it as a CJS module (if amd fails)
@@ -515,7 +653,8 @@ async function privateLoader(config, ...args) {
                             exports: cjsExports,
 
                             // resolve dep for CJS module
-                            require: async nameOrUrl => (await privateLoader(subDepResolution, nameOrUrl)).module, // recursion here
+                            //require: async nameOrUrl => (await privateLoader(subDepResolution, nameOrUrl)).module, // recursion here
+                            require: async nameOrUrl => await privateLoader(subDepResolution, nameOrUrl), // recursion here
                         }
 
                         // customize proxies & globals as needed
@@ -534,7 +673,8 @@ async function privateLoader(config, ...args) {
                         }
                         catch(err) {
                             // if was an AMD, consider it resolved (though with errors)
-                            AMD_MODULE.isAMD && module.resolvedWithError(err);
+                            if (AMD_MODULE.isAMD) log('RESOLved mod WITH ERRORS', moduleUrl, err);
+                            AMD_MODULE.isAMD && module.resolved(err);
                             
                             // else, fall through and see if it works with CJS below
                         }
@@ -550,12 +690,12 @@ async function privateLoader(config, ...args) {
                                 module.resolved((cjsProxy.module || {}).exports || cjsExports);
                             }
                             else {
-                                module.resolvedWithError(new Error('module seems to be neither AMD/UMD nor CommonJS'));
+                                module.resolved(new Error('module seems to be neither AMD/UMD nor CommonJS'));
                             }
                         }
                     }
                     catch(err) {
-                        module.resolvedWithError(err);
+                        module.resolved(err);
                     }
                 }
             });
