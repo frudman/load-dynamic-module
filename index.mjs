@@ -179,7 +179,6 @@
     //       libv = name => cdnjs(`libraries/${name}?fields=name,filename,version`);
 */
 
-
 // our method used to actually download modules
 import { http as download, AsyncFunction } from 'tidbits';//'my-npm-packages/freddy-javascript-utils';//'tidbits';
 
@@ -233,13 +232,10 @@ class Module {
     constructor({id, module} = {}) {
         id && (this.id = id); // its source URL
         module && (this.module = module); // DON'T SET IT unless there's a value there
-        this.waitingOnMe = [];
     }
 
     get isLoaded() { return 'module' in this };
-    get isUnresolved() { return !this.isLoaded && !!this.resolveMe; }
-
-    // maybe just always resolve (either module or err, no need to differentiate?)
+    get isUnresolved() { return !this.isLoaded && !!this.waitingOnMe; }
 
     resolved(m) {
         this.module = m; // m can be an actual module OR an Error if loading failed
@@ -248,25 +244,18 @@ class Module {
         // if (m instanceof Error && m.name === 'SyntaxError' && /await.+async.+function/i.test(m.message || ''))
         //     m.message = `${this.id} may be CJS module with nested requires\n\t(nested requires must be inside async functions)\n\toriginal error: ${m.message}`)
         
-        // this.publicizeResolution();
-
-        // this.resolveMe();
-         delete this.resolveMe; // IMPORTANT! used by isUnresolved 
-
-        if (this.alreadyResolved) {
-            this.alreadyResolved.push(m);
-            log('WHOOAAA, was already resolved', this.id, this.alreadyResolved);
-        }
-        else {
-            this.alreadyResolved = [m];
-        }
+        // if (this.alreadyResolved) {
+        //     this.alreadyResolved.push(m);
+        //     log('WHOOAAA, was already resolved - should not be here', this.id, this.alreadyResolved);
+        // }
+        // else {
+        //     this.alreadyResolved = [m];
+        // }
 
 
         // ...then, let dependents know
-        log('OOOOO - RESOLVING', this.id, typeof this.waitingOnMe, this.waitingOnMe)
-        this.waitingOnMe.forEach(resolveDep => resolveDep());
-        //delete this.waitingOnMe; // why not...
-        //log('OOOOO - deleted', this.id, typeof this.waitingOnMe)
+        (this.waitingOnMe || []).forEach(resolveDep => resolveDep());
+        delete this.waitingOnMe; // why not...
     }
 
     dependsOnMe(resolveDependent) {
@@ -285,7 +274,7 @@ class Module {
         //    - BUT, in case where no ACTUAL errors (which should be ALL of the time)
         //      - it's the FASTEST! EASIEST! SIMPLEST!
         
-        const deps = this.waitingOnMe;// || (this.waitingOnMe = []);
+        const deps = this.waitingOnMe || (this.waitingOnMe = []);
         deps.push(resolveDependent);
 
         // method 2, as per above
@@ -354,27 +343,24 @@ class Module {
             // }
 
             // resolve dependencies
-            privateLoader(subDepResolution, ...externals, async (...resolvedDeps) => {
-                const errs = resolvedDeps.filter(dep => dep instanceof Error);
-                if (errs.length > 0) {
-                    // resolved dependencies ERRORS will PREVENT AMD Define method from executing
-                    // - that's a big difference between AMD modules and ours
-                    //thisModule.resolved(new ModuleLoadError(`AMD Define method not executed because of failed dependencies`, ...errs));
-                    throw new ModuleLoadError(`xAMD Define method not executed because of failed dependencies`, ...errs);
-                }
-                else {
-                    try {
-                        const tt = await moduleDefine(...resolvedDeps);
-                        log('INSIDE AMD, got bacl tt', thisModule.id, tt);
-                        thisModule.resolved(tt); // could fail (if not [correct] AMD)
-                        //return await moduleDefine(...resolvedDeps); // could fail (if not [correct] AMD)
+            privateLoader(subDepResolution, ...externals)
+                .then(async depOrDeps => { // , async (...resolvedDeps) => {
+                    const resolvedDeps = Array.isArray(depOrDeps) ? depOrDeps : [depOrDeps]
+                    const errs = resolvedDeps.filter(dep => dep instanceof Error);
+                    if (errs.length > 0) {
+                        // resolved dependencies ERRORS will PREVENT AMD Define method from executing
+                        // - that's a big difference between AMD modules and ours
+                        thisModule.resolved(new ModuleLoadError(`AMD Define method not executed because of failed dependencies`, ...errs));
                     }
-                    catch(err) {
-                        //thisModule.resolved(new ModuleLoadError(`AMD Define method failed`, err)); // if not AMD, or some other error...
-                        throw new ModuleLoadError(`xAMD Define method failed`, err); // if not AMD, or some other error...
+                    else {
+                        try {
+                            thisModule.resolved(await moduleDefine(...resolvedDeps)); // could fail (if not [correct] AMD)
+                        }
+                        catch(err) {
+                            thisModule.resolved(new ModuleLoadError(`AMD Define method failed`, err)); // if not AMD, or some other error...
+                        }
                     }
-                }
-            });
+                })
         }
 
         return { defineMethod, get isAMD() { return isAMD; } };
@@ -490,7 +476,7 @@ async function privateLoader(config, ...args) {
         const {baseUrl, globals, urlResolvers, loaders} = config; // extract config parms
 
         // for when all is said & done...
-        const onReady = (args.length && typeof args[args.length-1] === 'function') ? args.pop() : undefined;
+        //const onReady = (args.length && typeof args[args.length-1] === 'function') ? args.pop() : undefined;
 
         const downloads = [];
         for (const dep of args) {
@@ -568,12 +554,13 @@ async function privateLoader(config, ...args) {
                 // finally, 
                 try {
                     const mods = resolvedDeps.map(dep => dep.finalVALUE);
-                    if (onReady)
-                        resolveWhenReady(onReady(...mods)); // result is whatever the onReady returns...
-                    else if (resolvedDeps.length === 1)
-                        resolveWhenReady(mods[0]); // could be: undefined, module, or error
-                    else
-                        resolveWhenReady(mods); // an array
+                    // if (onReady)
+                    //     resolveWhenReady(onReady(...mods)); // result is whatever the onReady returns...
+                    // else 
+                    resolveWhenReady(resolvedDeps.length === 1 ? mods[0] : mods);
+                    //     resolveWhenReady(mods[0]); // could be: undefined, module, or error
+                    // else
+                    //     resolveWhenReady(mods); // an array
                 }
                 catch(err) {
                     resolveWhenReady(err);
@@ -603,10 +590,8 @@ async function privateLoader(config, ...args) {
                 }
                 else { // loading a new module
 
-                    // set up what will happens when it's resolved
-                    //module.resolveMe = () => resolveJSM(module);
-                    module.resolveMe = true;
-                    module.dependsOnMe(() => resolveJSM(module)); // i should be the first in queue
+                    // set up what will happens when it's resolved...
+                    module.dependsOnMe(() => resolveJSM(module)); // ...i should be the first in queue
 
                     try {
                         // when resolving sub-dependencies, use same config except baseUrl which now reflects asking module
@@ -646,13 +631,10 @@ async function privateLoader(config, ...args) {
 
                         try { 
                             // pass #1: try it as an AMD module first
-                            const zz = await initModule(...Object.values(amdProxy));
-                            log('GOT AMD RESPONSE for', moduleUrl, zz);
-                            //module.resolved(zz);
+                            await initModule(...Object.values(amdProxy));
                         }
                         catch(err) {
                             // if was an AMD, consider it resolved (though with errors)
-                            log('ERROR CAGHT for AMD: already handled?', AMD_MODULE.isAMD, err);
                             AMD_MODULE.isAMD && module.resolved(err);
                             
                             // else, fall through and see if it works with CJS below
@@ -660,7 +642,6 @@ async function privateLoader(config, ...args) {
 
                         if (!AMD_MODULE.isAMD) {
                             if (isCommonJS(moduleSourcecode)) { 
-                                log('TRYING for CJS CODE', moduleUrl);
                                 // pass #2: yes, less efficient (since 2 passes) but allows for both modes (i.e. amd/umd and cjs) to be imported
                                 // BIG CAVEAT: only top-level requires will be honored in cjs; nested requires (within non-async functions) will fail
                                 
@@ -680,7 +661,7 @@ async function privateLoader(config, ...args) {
                         }
                     }
                     catch(err) {
-                        module.resolved(err);
+                        module.resolved(err); // could be an error with globals(...) [not much else is going on that could trip catch here]
                     }
                 }
             });
