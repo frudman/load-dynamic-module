@@ -15,23 +15,23 @@ const urlResolvers = [
     { t: (u,b) => /^(https?[:])?[/][/]/i.test(u), r: (u,b) => u },
 
 
-    // UNPKG: see README.md#cdn-issues
-    { t: (u,b) => /^unpkg[@#]/i.test(u), 
-      r: (u,b) => `https://unpkg.com/${repl(u, /^unpkg[@#]/i, '')}` }, // see README.md#cdn-issues
+    // // [UNTESTED] UNPKG: see README.md#cdn-issues
+    // { t: (u,b) => /^unpkg[#]/i.test(u), 
+    //   r: (u,b) => `https://unpkg.com/${repl(u, ...cdnx)}` }, // see README.md#cdn-issues
 
 
-    // CDNJS: see README.md#cdn-issues
-    { t: (u,b) => /^cdnjs[@#]/i.test(u), 
-      r: (u,b) => `https://cdnjs.cloudflare.com/ajax/libs/${repl(u, /^cdnjs[@#]/i, '', ...vers)}` }, 
+    // // [UNTESTED] CDNJS: see README.md#cdn-issues
+    // { t: (u,b) => /^cdnjs[#]/i.test(u), 
+    //   r: (u,b) => `https://cdnjs.cloudflare.com/ajax/libs/${repl(u, ...cdnx, ...vers)}` }, 
 
 
-    // JSDELIVR, part 1: see README.md#cdn-issues
-    { t: (u,b) => /^jsdelive?r[@#]/i.test(u), 
-      r: (u,b) => `https://cdn.jsdelivr.net/npm/${repl(u, /^jsdelive?r[@#]/i, '', ...vers)}`, }, // see readme.md...
+    // // [UNTESTED] JSDELIVR, part 1: see README.md#cdn-issues
+    // { t: (u,b) => /^jsdelive?r[#]/i.test(u), 
+    //   r: (u,b) => `https://cdn.jsdelivr.net/npm/${repl(u, ...cdnx, ...vers)}`, }, // see readme.md...
 
-    // JSDELIVR, part 2: need to append '/' for relative sub-deps to work
-    { t: (u,base) => /jsdelivr.com/i.test(base || ''), 
-      r: (u,base) => new URL(u, base + '/').href, }, // see README.md#cdn-issues
+    // // [UNTESTED] JSDELIVR, part 2: need to append '/' for relative sub-dependencies to work 
+    // { t: (u,base) => /jsdelivr.com/i.test(base || ''), 
+    //   r: (u,base) => new URL(u, base + '/').href, }, // see README.md#cdn-issues
 
 
     // default for name-only urls: consider them NPM modules and use UNPKG as per above
@@ -42,9 +42,10 @@ const urlResolvers = [
     { t: (u,b) => true, r: (u,b) => b ? new URL(u, b).href : u },
 ];
 
-// some helpers for jsdelivr & cdnjs to change ...pkg@version... to ...pkg/version...
-const vers = [/([^/]+)[@]/, '\\1/']; // ...but only first '@' and only if no preceding '/'
-const repl = (u,...args) => Array(args.length/2).reduce(now => now.replace(args.shift(), args.shift()), u); // cheap hack...
+// // some helpers for jsdelivr & cdnjs
+// const cdnx = [/^[^#]+[#]/, '']; // removes cdn prefix (e.g. unpkg#...)
+// const vers = [/([^/]+)[@]/, '\\1/']; // change ...pkg@version... to ...pkg/version... (only first '@' and only when no preceding '/')
+// const repl = (u,...args) => Array(args.length/2).reduce(now => now.replace(args.shift(), args.shift()), u); // cheap hack...
 
 const loaders = [
 
@@ -309,18 +310,16 @@ async function privateLoader(config, ...args) {
                     if (inProgress) { 
                         downloads.push(inProgress); // wait for it; may already be downloaded
                     }
-                    else (function(requestUrl) { // freeze ("close") finalUrl for this download...
+                    else (function(requestUrl) { // close over finalUrl for this download...
                         // ...since next loop may come around (and change finalUrl above) before this download is complete
                         downloads.push(alreadyInProgress[requestUrl] = download(requestUrl)
                             .then(downloaded => {
                                 const responseUrl = downloaded.responseURL || requestUrl; // not all browsers make responseURL available
                                 const actualUrl = (responseUrl === requestUrl) ? requestUrl : responseUrl;
                                 if (actualUrl !== requestUrl) {
-                                    log('URLx-302 was redirected', requestUrl, '-->', actualUrl);
+                                    // initial url was redirected (i.e. 302) by server (e.g. unpkg.com servers)
                                     alreadyInProgress[actualUrl] = alreadyInProgress[requestUrl]; // module reachable from either url
                                 }
-                                else 
-                                    log('URLx-200 - not redirected', actualUrl);
                                 return {
                                     type: type || downloaded.contentType || extension(actualUrl),
                                     data: downloaded.content,
@@ -329,7 +328,7 @@ async function privateLoader(config, ...args) {
                                 }
                             })
                             .catch(err => ({finalVALUE: new DownloadError(`module ${requestUrl} failed to download`, err)})));
-                    })(finalUrl); // tbi: are const within a for loop alse closed for each iteration (like const loop variables)
+                    })(finalUrl); // tbi: are const within for loops closed with each iteration (like their const loop variables)
                 }
                 else { // IMMEDIATE [string-based] DATA
                     downloads.push({ type, data, globalName, }); // may still pass through loaders
