@@ -3,6 +3,69 @@
 // our method used to actually download modules
 import { http as download, AsyncFunction, loadCSSCode } from 'tidbits';//'my-npm-packages/freddy-javascript-utils';
 
+const urlResolvers = [
+
+    // resolvers are executed from top-down: higher resolvers take precedence over lower ones
+    // custom resolvers get added AHEAD of these so can always override resolvers below
+
+    // for each {resolver}:
+    // - t to test if applicable; r to resolve the url; u for url; b for baseUrl (if url is relative)
+
+    // any absolute url is kept as is
+    { t: (u,b) => /^(https?[:])?[/][/]/i.test(u), r: (u,b) => u },
+
+
+    // UNPKG: see README.md#cdn-issues
+    { t: (u,b) => /^unpkg[@#]/i.test(u), 
+      r: (u,b) => `https://unpkg.com/${repl(u, /^unpkg[@#]/i, '')}` }, // see README.md#cdn-issues
+
+
+    // CDNJS: see README.md#cdn-issues
+    { t: (u,b) => /^cdnjs[@#]/i.test(u), 
+      r: (u,b) => `https://cdnjs.cloudflare.com/ajax/libs/${repl(u, /^cdnjs[@#]/i, '', ...vers)}` }, 
+
+
+    // JSDELIVR, part 1: see README.md#cdn-issues
+    { t: (u,b) => /^jsdelive?r[@#]/i.test(u), 
+      r: (u,b) => `https://cdn.jsdelivr.net/npm/${repl(u, /^jsdelive?r[@#]/i, '', ...vers)}`, }, // see readme.md...
+
+    // JSDELIVR, part 2: need to append '/' for relative sub-deps to work
+    { t: (u,base) => /jsdelivr.com/i.test(base || ''), 
+      r: (u,base) => new URL(u, base + '/').href, }, // see README.md#cdn-issues
+
+
+    // default for name-only urls: consider them NPM modules and use UNPKG as per above
+    { t: (u,b) => /^[a-z_$]/i.test(u), r: (u,b) => `https://unpkg.com/${u}`, }, // see readme.md...
+
+    // our catch all (required for simpler logic in addKnownModule and later on)
+    // based on: https://developer.mozilla.org/en-US/docs/Web/API/URL
+    { t: (u,b) => true, r: (u,b) => b ? new URL(u, b).href : u },
+];
+
+// some helpers for jsdelivr & cdnjs to change ...pkg@version... to ...pkg/version...
+const vers = [/([^/]+)[@]/, '\\1/']; // ...but only first '@' and only if no preceding '/'
+const repl = (u,...args) => Array(args.length/2).reduce(now => now.replace(args.shift(), args.shift()), u); // cheap hack...
+
+const loaders = [
+
+    // loaders are executed from top-down: higher loaders take precedence over lower ones
+    // custom loaders get added AHEAD of these so can always override loaders below
+
+    // each {loader} has:
+    // - t: function that TESTs if loader applies to this TYPE of content
+    // - c: function that processes the Content as needed (e.g. loads it as css); then it SHOULD return the [possibly modified] Content
+
+    // custom loaders get added AHEAD of these so can always override loaders below
+
+    { t: t => /css/i.test(t), c: c => (loadCSSCode(c), c) }, 
+    { t: t => /json/i.test(t), c: c => JSON.parse(c) }, // ignore parse errors: will be handled later
+
+    // catch all (so there's always a handler: makes for easier logic later)
+    { t: t => true, c: c => c } 
+];
+
+
+
 // convert commonjs 'require' (implicitly sync) to 'await require' (explicit async)
 // - WORKS ONLY FOR top-level requires since nested requires (i.e. within a function) will fail 
 //   with a syntax error (unless that function itself was already marked async)
@@ -186,43 +249,6 @@ export function addKnownModule(ref, module, custom = []) {
     addModule(name, new Module({id, module}))
 }
 
-const urlResolvers = [
-
-    // resolvers are executed from top-down: higher resolvers take precedence over lower ones
-    // custom resolvers get added AHEAD of these so can always override resolvers below
-
-    // for each {resolver}:
-    // - t to test if applicable; r to resolve the url; u for url; b for baseUrl (if url is relative)
-
-    // any absolute url is kept as is
-    { t: (u,b) => /^(https?[:])?[/][/]/i.test(u), r: (u,b) => u, },
-
-    // name-only urls are considered NPM modules (VERY important note in README.md about NPM-based CDNs)
-    { t: (u,b) => /^[a-z_$]/i.test(u), r: (u,b) => `https://cdn.jsdelivr.net/npm/${u}`, }, // see readme.md...
-
-    // our catch all (required for simpler logic in addKnownModule and later on)
-    // based on: https://developer.mozilla.org/en-US/docs/Web/API/URL
-    { t: (u,b) => true, r: (u,b) => b ? new URL(u, b).href : u, },
-];
-
-const loaders = [
-
-    // loaders are executed from top-down: higher loaders take precedence over lower ones
-    // custom loaders get added AHEAD of these so can always override loaders below
-
-    // each {loader} has:
-    // - t: function that TESTs if loader applies to this TYPE of content
-    // - c: function that processes the Content as needed (e.g. loads it as css); then it SHOULD return the [possibly modified] Content
-
-    // custom loaders get added AHEAD of these so can always override loaders below
-
-    { t: t => /css/i.test(t), c: c => (loadCSSCode(c), c) }, 
-    { t: t => /json/i.test(t), c: c => JSON.parse(c) }, // ignore parse errors: will be handled later
-
-    // catch all (so there's always a handler: makes for easier logic later)
-    { t: t => true, c: c => c } 
-];
-
 const mainConfig = {
     baseUrl: window.location.href, 
     globals: ()=>{}, 
@@ -283,16 +309,27 @@ async function privateLoader(config, ...args) {
                     if (inProgress) { 
                         downloads.push(inProgress); // wait for it; may already be downloaded
                     }
-                    else {
-                        downloads.push(alreadyInProgress[finalUrl] = download(finalUrl)
-                            .then(downloaded => ({
-                                type: type || downloaded.contentType || extension(finalUrl),
-                                data: downloaded.content,
-                                globalName,
-                                finalUrl, // becomes base for relative-base sub-dependencies
-                            }))
-                            .catch(err => ({finalVALUE: new DownloadError(`module ${finalUrl} failed to download`, err)})));
-                    }
+                    else (function(requestUrl) { // freeze ("close") finalUrl for this download...
+                        // ...since next loop may come around (and change finalUrl above) before this download is complete
+                        downloads.push(alreadyInProgress[requestUrl] = download(requestUrl)
+                            .then(downloaded => {
+                                const responseUrl = downloaded.responseURL || requestUrl; // not all browsers make responseURL available
+                                const actualUrl = (responseUrl === requestUrl) ? requestUrl : responseUrl;
+                                if (actualUrl !== requestUrl) {
+                                    log('URLx-302 was redirected', requestUrl, '-->', actualUrl);
+                                    alreadyInProgress[actualUrl] = alreadyInProgress[requestUrl]; // module reachable from either url
+                                }
+                                else 
+                                    log('URLx-200 - not redirected', actualUrl);
+                                return {
+                                    type: type || downloaded.contentType || extension(actualUrl),
+                                    data: downloaded.content,
+                                    globalName,
+                                    actualUrl, // becomes base for relative sub-dependencies
+                                }
+                            })
+                            .catch(err => ({finalVALUE: new DownloadError(`module ${requestUrl} failed to download`, err)})));
+                    })(finalUrl); // tbi: are const within a for loop alse closed for each iteration (like const loop variables)
                 }
                 else { // IMMEDIATE [string-based] DATA
                     downloads.push({ type, data, globalName, }); // may still pass through loaders
@@ -313,15 +350,15 @@ async function privateLoader(config, ...args) {
 
                         try {
                             // loaders includes [MUST have] a catch-all so always a loader to be found
-                            const preProcessed = loaders.find(loader => loader.t(dep.type)).c(dep.data);
+                            const asLoaded = loaders.find(loader => loader.t(dep.type)).c(dep.data);
 
-                            dep.finalVALUE = (/javascript/i.test(dep.type)) ? (await initializeJavascriptModule(dep.finalUrl, preProcessed)).module
-                                                                            : preProcessed;
+                            // final value is as loaded above unless it's a javascript module...
+                            dep.finalVALUE = (/javascript/i.test(dep.type)) ? (await initJSModule(dep.actualUrl, asLoaded)).module : asLoaded;
 
                             // NOW, can assign to global (if need be)
                             // todo: maybe check (& invalidate) some important globals (e.g. xmlhttprequest, alert/confirm, console, document, ...)
                             // although a module/plugin could always just assign directly UNLESS window object itself is "protected"...
-                            dep.globalName && (window[globalName] = dep.finalVALUE);
+                            dep.globalName && (window[dep.globalName] = dep.finalVALUE);
 
                             // housekeeping: delete all keys now that we have a final value
                             Object.keys(dep).forEach(k => !/finalVALUE/.test(k) && delete dep[k]);
@@ -342,10 +379,9 @@ async function privateLoader(config, ...args) {
                 }
             })
 
-        // our private method to load javascript modules in a controlled environment (i.e. using AsyncFunction)
-        async function initializeJavascriptModule(moduleUrl, moduleSourcecode) {
+        async function initJSModule(moduleUrl, moduleSourcecode) {
             
-            // initializeJavascriptModule NEVER FAILS but a module may "resolve" to an Error
+            // this method NEVER FAILS but a module may "resolve" to an Error
             // - so NO 'reject' param/clause as per note above...
 
             return new Promise(async resolveJSM => { 
