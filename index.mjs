@@ -314,10 +314,9 @@ async function privateLoader(config, ...args) {
                         // ...since next loop may come around (and change finalUrl above) before this download is complete
                         downloads.push(alreadyInProgress[requestUrl] = download(requestUrl)
                             .then(downloaded => {
-                                const responseUrl = downloaded.responseURL || requestUrl; // not all browsers make responseURL available
-                                const actualUrl = (responseUrl === requestUrl) ? requestUrl : responseUrl;
+                                const actualUrl = (downloaded.responseURL === requestUrl) ? requestUrl : downloaded.responseURL;
                                 if (actualUrl !== requestUrl) {
-                                    // initial url was redirected (i.e. 302) by server (e.g. unpkg.com servers)
+                                    // initial url was redirected (e.g. 301, 302) by server (e.g. unpkg.com servers when not specifying version or file)
                                     alreadyInProgress[actualUrl] = alreadyInProgress[requestUrl]; // module reachable from either url
                                 }
                                 return {

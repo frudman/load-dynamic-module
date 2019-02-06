@@ -1,6 +1,6 @@
 {
   "name": "load-dynamic-module",
-  "version": "1.0.52",
+  "version": "1.1.0",
   "description": "a browser-based loader for both AMD/UMD and CommonJS modules",
   "main": "index.mjs",
   "module": "index.mjs",
@@ -36,7 +36,7 @@
   "author": "Frederic Rudman",
   "license": "ISC",
   "dependencies": {
-    "tidbits": "^1.0.21"
+    "tidbits": "^1.0.22"
   },
   "devDependencies": {
     "@babel/cli": "^7.2.3",

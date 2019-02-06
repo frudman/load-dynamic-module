@@ -129,6 +129,20 @@ Read [NPM package.json DOC](https://docs.npmjs.com/files/package.json) and also 
     // if only 1 arg, that module is returned
     // if 2 or more args, loaded modules are returned as an array
 
+    [read this](https://metafizzy.co/blog/switching-out-cdnjs-for-unpkg/)
+
+    [CDNJS](https://cdnjs.com/api)
+
+    [also this for jsdelivr](https://cdn.jsdelivr.net/npm/noty/)
+
+    [Some notes from here](https://medium.freecodecamp.org/anatomy-of-js-module-systems-and-building-libraries-fadcd8dbd0e)
+    - in package.json:
+        - main is for UMDs
+        - module is for ES6/import-export
+        - also seen in the wild: 
+            - browser (presumably amd)
+            - unpkg: guess... :-)
+
 
 
     - QUESTION: should we ALWAYS return an array instead?
