@@ -1,6 +1,8 @@
-// important: refer to README.md before using - you've been warned! :-)
+// important
+// important: see README.md before using - you've been warned! :-)
+// important
 
-// our method used to actually download modules
+// misc helpers
 import { http as download, AsyncFunction, loadCSSCode } from 'tidbits';//'my-npm-packages/freddy-javascript-utils';
 
 const urlResolvers = [
@@ -16,6 +18,7 @@ const urlResolvers = [
 
 
     // // [UNTESTED] UNPKG: see README.md#cdn-issues
+    // read: https://portswigger.net/daily-swig/cdn-flaw-left-thousands-of-websites-open-to-abuse
     // { t: (u,b) => /^unpkg[#]/i.test(u), 
     //   r: (u,b) => `https://unpkg.com/${repl(u, ...cdnx)}` }, // see README.md#cdn-issues
 
@@ -26,6 +29,7 @@ const urlResolvers = [
 
 
     // // [UNTESTED] JSDELIVR, part 1: see README.md#cdn-issues
+    // also read: https://www.jsdelivr.com/features (but requires users to manually add their libraries; not complete and unwieldy)
     // { t: (u,b) => /^jsdelive?r[#]/i.test(u), 
     //   r: (u,b) => `https://cdn.jsdelivr.net/npm/${repl(u, ...cdnx, ...vers)}`, }, // see readme.md...
 
@@ -42,7 +46,7 @@ const urlResolvers = [
     { t: (u,b) => true, r: (u,b) => b ? new URL(u, b).href : u },
 ];
 
-// // some helpers for jsdelivr & cdnjs
+// some helpers for CDNs above (jsdelivr, unpkg, cdnjs)
 // const cdnx = [/^[^#]+[#]/, '']; // removes cdn prefix (e.g. unpkg#...)
 // const vers = [/([^/]+)[@]/, '\\1/']; // change ...pkg@version... to ...pkg/version... (only first '@' and only when no preceding '/')
 // const repl = (u,...args) => Array(args.length/2).reduce(now => now.replace(args.shift(), args.shift()), u); // cheap hack...
@@ -107,6 +111,9 @@ class ModuleLoadError extends Error {
 // cheap means to ensure no infinite loop while resolving dependencies
 const LONGEST_LIKELY_DEPENDENCY_CHAIN = 30; // number of modules depending on me BEFORE I'm initially resolved
 
+// TODO: if change name of this class (e.g. Modulex), does this affect plugin-loader.js???
+// PROBABLY YES!!!
+
 class Module {
 
     constructor({id, module} = {}) {
@@ -115,7 +122,7 @@ class Module {
     }
 
     get isLoaded() { return 'module' in this };
-    get isUnresolved() { return !this.isLoaded && !!this.waitingOnMe; }
+    get isUnresolved() { return !!this.waitingOnMe; }
 
     resolved(m) {
         // set it (isLoaded will now always be true)...
@@ -127,7 +134,7 @@ class Module {
         
         // ...then, let dependents know
         (this.waitingOnMe || []).forEach(resolveDep => resolveDep());
-        delete this.waitingOnMe; // why not...
+        delete this.waitingOnMe; // good housekeeping: why not...
     }
 
     dependsOnMe(resolveDependent) {
@@ -151,7 +158,7 @@ class Module {
 
         // as per method 2 (above)
         if (deps.length > LONGEST_LIKELY_DEPENDENCY_CHAIN)
-            this.resolved(new Error(`likely cycle in module resolution for ${this.id} (depth=${deps.length})`));
+            this.resolved(new ModuleLoadError(`likely cycle in module resolution for ${this.id} (depth=${deps.length})`));
     }
 
     genAMDDefine(subDepResolution) {
@@ -175,41 +182,49 @@ class Module {
 
             const moduleDefine = args.pop(); // always last param
             if (typeof moduleDefine !== 'function') 
-                throw new Error(`expecting 'define' to be a function (was ${typeof moduleDefine})`);
+                throw new ModuleLoadError(`expecting 'define' to be a function (was ${typeof moduleDefine})`);
 
-            // find out how many deps the moduleDefine function expects
-            // WHOAAA: BUT if function uses ...ARGS format (i.e. the spread/rest operator), FUNCTION.LENGTH === 0!!!
-            const numDeps = moduleDefine.length; // ...function.length returns how many parms (so, deps) are declared for it
+            // SIMPLE STRATEGY 1: implement as AMD wants
+            const externals = args.pop() || [];
+            if (!Array.isArray(externals))
+                throw new ModuleLoadError(`expecting '[dependencies]' to be an array (was ${typeof externals})`);
 
-            // WHOAAA, part 2: if numDeps === 0, may mean NO parms, or means ...parms: how to proceed???
+            /* More involved Strategy 2 (unused for now)
+                // find out how many deps the moduleDefine function expects
+                // WHOAAA: BUT if function uses ...ARGS format (i.e. the spread/rest operator), FUNCTION.LENGTH === 0!!!
+                const numDeps = moduleDefine.length; // ...function.length returns how many parms (so, deps) are declared for it
 
-            // we allow for either an array of deps (traditional) or just comma-separated parms (for convenience when creating amd modules manually)
-            // we're also ok with a mixture of strings and arrays (of strings only), though not clear why that would be the case
-            // and we always work backwards on parms (from right to left) to allow for possibility of a module name at the front/leftmost position
-            // (as per traditional, in case first/leftmost parm is module's 'name', as is typical of AMD define([mod-name,][...deps,] fcn(...depRefs){}))
-            // IF a module name is specified, it remains UNUSED (not needed for modules loaded by URLs)
-            // POSSIBLE: if single string parm left (i.e. module name), maybe register it as the module's name also: i.e. as an alias
-            // - but what happens if another module wants that name: overwrite? remove both? keep first? keep both?
-            // alternative: Array.flat() would be REALLY NICE here, but Edge does NOT support it (as of feb 6, 2019)
-            // - https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/flat
-            const externals = [];
-            while(externals.length < numDeps) {
-                const nextDep = args.pop(); // from right/back to left/front 
-                if (typeof nextDep === 'string')
-                    externals.unshift(nextDep); // add to front/left of array
-                else if (Array.isArray(nextDep)) {
-                    while (externals.length < numDeps && nextDep.length > 0) { // process nested deps
-                        const nd = nextDep.pop(); // take last one (so going from back to front)...
-                        if (typeof nd === 'string')
-                            externals.unshift(nd); // add to front of array
-                        else 
-                            throw new Error(`invalid dependency in AMD module definition - can only be a string (got type=${typeof nd})`);
+                // WHOAAA, part 2: if numDeps === 0, may mean NO parms, or means ...parms: how to proceed???
+                // if (numDeps === 0 && args.length > 0)
+                //     throw new ModuleLoadError(`define method takes no parms but some dependencies declared\n\t[possible issue: 'define(...parms){}' declaration format NOT supported]`); // give users a hint
+
+                // we allow for either an array of deps (traditional) or just comma-separated parms (for convenience when creating amd modules manually)
+                // we're also ok with a mixture of strings and arrays (of strings only), though not clear why that would be the case
+                // and we always work backwards on parms (from right to left) to allow for possibility of a module name at the front/leftmost position
+                // (as per traditional, in case first/leftmost parm is module's 'name', as is typical of AMD define([mod-name,][...deps,] fcn(...depRefs){}))
+                // IF a module name is specified, it remains UNUSED (not needed for modules loaded by URLs)
+                // POSSIBLE: if single string parm left (i.e. module name), maybe register it as the module's name also: i.e. as an alias
+                // - but what happens if another module wants that name: overwrite? remove both? keep first? keep both?
+                // alternative: Array.flat() would be REALLY NICE here, but Edge does NOT support it (as of feb 6, 2019)
+                // - https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/flat
+                const externals = [];
+                while(externals.length < numDeps) {
+                    const nextDep = args.pop(); // from right/back to left/front 
+                    if (typeof nextDep === 'string')
+                        externals.unshift(nextDep); // add to front/left of array
+                    else if (Array.isArray(nextDep)) {
+                        while (externals.length < numDeps && nextDep.length > 0) { // process nested deps
+                            const nd = nextDep.pop(); // take last one (so going from back to front)...
+                            if (typeof nd === 'string')
+                                externals.unshift(nd); // add to front of array
+                            else 
+                                throw new ModuleLoadError(`invalid dependency in AMD module definition - can only be a string (got type=${typeof nd})`);
+                        }
                     }
+                    else 
+                        throw new ModuleLoadError(`invalid dependency in AMD module definition - can only be a string or an array of strings`);
                 }
-                else 
-                    throw new Error(`invalid dependency in AMD module definition - can only be a string or an array of strings`);
-            }
-
+            */
 
             // BELOW (commented out): this is the module's name (as module author wants it defined, if strictly following AMD define) 
             // - [we're not using it here: code is for reference only]
@@ -312,6 +327,12 @@ async function privateLoader(config, ...args) {
                     }
                     else (function(requestUrl) { // close over finalUrl for this download...
                         // ...since next loop may come around (and change finalUrl above) before this download is complete
+
+                        // since a CONST cannot be changed (or shared past the end of its block),
+                        // it's likely that it's closed within EACH iteration of a loop (else would have its value
+                        // change on each iteration, which is illegal; not so for let variables, so an issue there? tbi)
+                        // so (function()) closing here is probably not needed
+
                         downloads.push(alreadyInProgress[requestUrl] = download(requestUrl)
                             .then(downloaded => {
                                 const actualUrl = (downloaded.responseURL === requestUrl) ? requestUrl : downloaded.responseURL;
@@ -387,6 +408,8 @@ async function privateLoader(config, ...args) {
                 // get existing module (if already loaded), or creates new one
                 const module = getModule(moduleUrl); 
 
+                const modID = `module[${moduleUrl}]`;
+
                 if (module.isLoaded) {
                     resolveJSM(module); // modules are loaded once, then reused
                 }
@@ -395,78 +418,90 @@ async function privateLoader(config, ...args) {
                 }
                 else { // loading a new module
 
-                    // set up what will happens when it's resolved...
-                    module.dependsOnMe(() => resolveJSM(module)); // ...i should be the first in [my own] queue
+                    // set up what will happens when i'm resolved: i should be the first in [my own] queue...
+                    module.dependsOnMe(() => resolveJSM(module)); // ...to resolve whoever requested me (i.e. resolveJSM)
+
+                    // when resolving sub-dependencies, use same config except baseUrl which now reflects asking module
+                    const subDepResolution = {baseUrl: moduleUrl, globals, urlResolvers, loaders};
+
+                    // will try it first as an amd module
+                    const AMD_MODULE = module.genAMDDefine(subDepResolution);
+
+                    const amdProxy = { // for amd modules
+                        define: AMD_MODULE.defineMethod,
+                        module: undefined,
+                        exports: undefined,
+                        require(ref) { throw new ModuleLoadError(`cannot 'require' in AMD ${modID}:\n\ttry 'await requireAsync("${ref}"' instead`) },
+                        requireAsync: async nameOrUrl => await privateLoader(subDepResolution, nameOrUrl), // recursion here
+                    };
+
+                    // may also need to try it as a CJS module (if amd fails)
+                    const cjsExports = {};
+                    const cjsProxy = { // for commonjs modules
+                        define: () => { throw new ModuleLoadError(`unexpected use of DEFINE in commonJS ${modID}`)},
+                        module: { exports: cjsExports },
+                        exports: cjsExports,
+
+                        // resolve dep for CJS module
+                        require: async nameOrUrl => await privateLoader(subDepResolution, nameOrUrl), // recursion here
+                    }
 
                     try {
-                        // when resolving sub-dependencies, use same config except baseUrl which now reflects asking module
-                        const subDepResolution = {baseUrl: moduleUrl, globals, urlResolvers, loaders};
-
-                        // will try it as an amd module
-                        const AMD_MODULE = module.genAMDDefine(subDepResolution);
-
-                        const amdProxy = { // for amd modules
-                            define: AMD_MODULE.defineMethod,
-                            module: undefined,
-                            exports: undefined,
-                            require(ref) { throw new Error(`cannot 'require' in AMD module ${moduleUrl}:\n\ttry 'await requireAsync("${ref}"' instead`) },
-                            requireAsync: async nameOrUrl => await privateLoader(subDepResolution, nameOrUrl), // always returns actual module/err; recursion here
-                        };
-
-                        // may also need to try it as a CJS module (if amd fails)
-                        const cjsExports = {};
-                        const cjsProxy = { // for commonjs modules
-                            define: () => { throw new Error('unexpected use of DEFINE in commonJS module')},
-                            module: { exports: cjsExports },
-                            exports: cjsExports,
-
-                            // resolve dep for CJS module
-                            require: async nameOrUrl => await privateLoader(subDepResolution, nameOrUrl), // recursion here
-                        }
-
-                        // customize proxies & globals as needed
-                        globals(amdProxy, cjsProxy); 
+                        globals(amdProxy, cjsProxy); // customize proxies & globals as needed
+                    }
+                    catch(err) {
+                        return module.resolved(new ModuleLoadError(`globals initialization problem with ${modID}`, err)); 
+                    }
                     
-                        // Try as AMD module first because 1) many browser-based modules are AMD/UMD anyway and 2) no need for code manipulation
-                        // - MUST pass dummy module/exports/require else would use/fallback on those from global context if any
-                        // - Use AsyncFunction in case module code uses async requires
-                        // - could initModule.bind(x) but this would change meaning of 'this' within module: default is global/window object
-                        //    - this could be a means to protect the window object if needed (e.g. by replacing it with null, or a proxying object)
-                        const initModule = new AsyncFunction(...Object.keys(amdProxy), moduleSourcecode);
+                    // Try as AMD module first because 1) many browser-based modules are AMD/UMD anyway and 2) no need for code manipulation
+                    // - MUST pass dummy module/exports/require else would use/fallback on those from global context if any
+                    // - Use AsyncFunction in case module code uses async requires
+                    // - could initModule.bind(x) but this would change meaning of 'this' within module: default is global/window object
+                    //    - this could be a means to protect the window object if needed (e.g. by replacing it with null, or a proxying object)
+                    const initModule = new AsyncFunction(...Object.keys(amdProxy), moduleSourcecode);
 
-                        try { 
-                            // pass #1: try it as an AMD module first
-                            await initModule(...Object.values(amdProxy));
-                        }
-                        catch(err) {
-                            // if was an AMD, consider it resolved (though with errors)
-                            AMD_MODULE.isAMD && module.resolved(err);
-                            
-                            // else, fall through and see if it works with CJS below
-                        }
+                    try { 
+                        // pass #1: try it as an AMD module first
+                        const nonAMDResult = await initModule(...Object.values(amdProxy));
 
-                        if (!AMD_MODULE.isAMD) {
-                            if (isCommonJS(moduleSourcecode)) { 
-                                // pass #2: less efficient (since 2 passes) but allows for both modes (i.e. amd/umd and cjs) to be imported
-                                // BIG CAVEAT: only top-level requires will be honored in cjs; nested requires (within non-async functions) will fail
-                                
-                                const awaitableCode = commonjsToAwaitRequire(moduleSourcecode);
-                                const commonjsInit = new AsyncFunction(...Object.keys(cjsProxy), awaitableCode);
-                                try {
-                                    await commonjsInit(...Object.values(cjsProxy));
-                                    module.resolved((cjsProxy.module || {}).exports || cjsExports);
-                                }
-                                catch(err) {
-                                    module.resolved(new ModuleLoadError(`Failed to load ${moduleUrl} as CJS module`, err));
-                                }
-                            }
-                            else {
-                                module.resolved(new ModuleLoadError('module seems to be neither AMD/UMD nor CommonJS'));
-                            }
+                        // no errors
+                        // if amd, we're done
+                        // if NOT amd: are we done? yes, if no errors?
+
+                        // can we have a CJS module that does not refer to module or exports?
+                        // - in which case, strictly for side effects? but if so, that's ok for us then, right? same deal as non-amd/non-cjs module
+
+                        if (AMD_MODULE.isAMD) {
+                            // we're done: module was already resolved through define method
+                        }
+                        else {
+                            // no errors, so not an AMD module but also not likely a CJS module (no references to module.exports or require)
+                            // so assume a valid module run for its side-effects (e.g. api calls) that is neither amd nor cjs
+                            module.resolved(nonAMDResult); // if anything returned; all actions may have been set in code itself (e.g. api...)
                         }
                     }
                     catch(err) {
-                        module.resolved(err); // could be an error with globals(...) [not much else is going on that could trip catch here]
+                        if (AMD_MODULE.isAMD)
+                            module.resolved(new ModuleLoadError(`AMD ${modID} error`, err)); // consider it resolved (albeit with errors)
+                        else if (isCommonJS(moduleSourcecode)) { 
+
+                            // pass #2: 2 passes is less efficient but allows for both modes (i.e. amd/umd and cjs) to be tried/imported
+                            // BIG CAVEAT: only top-level requires will be honored in cjs; nested requires (within non-async functions) will fail
+                            
+                            try {
+                                const awaitableCode = commonjsToAwaitRequire(moduleSourcecode);
+                                const commonjsInit = new AsyncFunction(...Object.keys(cjsProxy), awaitableCode);
+
+                                await commonjsInit(...Object.values(cjsProxy));
+                                module.resolved((cjsProxy.module || {}).exports || cjsExports);
+                            }
+                            catch(err) {
+                                module.resolved(new ModuleLoadError(`Failed to load ${modID} as CommonJS`, err));
+                            }
+                        }
+                        else {
+                            module.resolved(new ModuleLoadError(`${modID} initialization problem`, err));
+                        }
                     }
                 }
             });
