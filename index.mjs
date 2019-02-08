@@ -91,8 +91,8 @@ const extension = str => (str||'').split('.').pop();
 //const extension = (str, keepDot = false) => ((str||'').match(/[.][^.]*$/)||[''])[0].substring(keepDot ? 0 : 1);
 
 const loadedModules = {};
-const getModule = id => loadedModules[id] || (loadedModules[id] = new Module({id})); 
-const addModule = (id, module) => loadedModules[id] = new Module({id, module});
+const getModule = id => loadedModules[id] || (loadedModules[id] = new DynamicModule({id})); 
+const addModule = (id, module) => loadedModules[id] = new DynamicModule({id, module});
 
 class DownloadError extends Error {
     constructor(msg, err) { 
@@ -114,7 +114,10 @@ const LONGEST_LIKELY_DEPENDENCY_CHAIN = 30; // number of modules depending on me
 // TODO: if change name of this class (e.g. Modulex), does this affect plugin-loader.js???
 // PROBABLY YES!!!
 
-class Module {
+class DynamicModule {
+
+    // really just a Module but that name conflicts with ES6 'Module' name used by modern browsers (when loading
+    // modules!) - so let's keep it distinct
 
     constructor({id, module} = {}) {
         id && (this.id = id); // its source URL
@@ -262,7 +265,7 @@ class Module {
 export function addKnownModule(ref, module, custom = []) {
     // store name as it would be resolved: different (e.g. relative) URLS pointing to same module load only once
     const id = (custom||[]).concat(urlResolvers).find(resolver => resolver.t(ref)).r(ref); // will always find one (because of catch-all)
-    addModule(name, new Module({id, module}))
+    addModule(name, new DynamicModule({id, module}))
 }
 
 const mainConfig = {
@@ -270,6 +273,8 @@ const mainConfig = {
     globals: ()=>{}, 
     urlResolvers,
     loaders,
+
+    useStrict: true, // forces strict mode (recommended): prepends '"use strict";\n\n' before loading modules
 };
 
 const publicLoader = privateLoader.bind(null, mainConfig);
@@ -302,7 +307,7 @@ async function privateLoader(config, ...args) {
         // - so unloadable modules (e.g. network or syntax errors) are set to the ERROR that made them fail (can test for module instanceof Error)
         // - so reject clause (of Promise above) would NEVER be used
 
-        const {baseUrl, globals, urlResolvers, loaders} = config; // extract config parms
+        const {baseUrl, globals, urlResolvers, loaders, useStrict} = config; // extract config parms
 
         const downloads = [];
         for (const dep of args) {
@@ -398,12 +403,15 @@ async function privateLoader(config, ...args) {
                 }
             })
 
-        async function initJSModule(moduleUrl, moduleSourcecode) {
+        async function initJSModule(moduleUrl, moduleSourceCode) {
             
             // this method NEVER FAILS but a module may "resolve" to an Error
             // - so NO 'reject' param/clause as per note above...
 
             return new Promise(async resolveJSM => { 
+
+                // basic safety & better performance: is that safe for every module?
+                useStrict && (moduleSourceCode = '"use strict";\n\n' + moduleSourceCode);
 
                 // get existing module (if already loaded), or creates new one
                 const module = getModule(moduleUrl); 
@@ -422,7 +430,7 @@ async function privateLoader(config, ...args) {
                     module.dependsOnMe(() => resolveJSM(module)); // ...to resolve whoever requested me (i.e. resolveJSM)
 
                     // when resolving sub-dependencies, use same config except baseUrl which now reflects asking module
-                    const subDepResolution = {baseUrl: moduleUrl, globals, urlResolvers, loaders};
+                    const subDepResolution = {baseUrl: moduleUrl, globals, urlResolvers, loaders, useStrict};
 
                     // will try it first as an amd module
                     const AMD_MODULE = module.genAMDDefine(subDepResolution);
@@ -458,7 +466,7 @@ async function privateLoader(config, ...args) {
                     // - Use AsyncFunction in case module code uses async requires
                     // - could initModule.bind(x) but this would change meaning of 'this' within module: default is global/window object
                     //    - this could be a means to protect the window object if needed (e.g. by replacing it with null, or a proxying object)
-                    const initModule = new AsyncFunction(...Object.keys(amdProxy), moduleSourcecode);
+                    const initModule = new AsyncFunction(...Object.keys(amdProxy), moduleSourceCode);
 
                     try { 
                         // pass #1: try it as an AMD module first
@@ -483,13 +491,13 @@ async function privateLoader(config, ...args) {
                     catch(err) {
                         if (AMD_MODULE.isAMD)
                             module.resolved(new ModuleLoadError(`AMD ${modID} error`, err)); // consider it resolved (albeit with errors)
-                        else if (isCommonJS(moduleSourcecode)) { 
+                        else if (isCommonJS(moduleSourceCode)) { 
 
                             // pass #2: 2 passes is less efficient but allows for both modes (i.e. amd/umd and cjs) to be tried/imported
                             // BIG CAVEAT: only top-level requires will be honored in cjs; nested requires (within non-async functions) will fail
                             
                             try {
-                                const awaitableCode = commonjsToAwaitRequire(moduleSourcecode);
+                                const awaitableCode = commonjsToAwaitRequire(moduleSourceCode);
                                 const commonjsInit = new AsyncFunction(...Object.keys(cjsProxy), awaitableCode);
 
                                 await commonjsInit(...Object.values(cjsProxy));
@@ -508,3 +516,114 @@ async function privateLoader(config, ...args) {
         }
     });
 }
+
+/* reference for future exploration: loading modules using <script type=module> techniques
+
+    A big issue with our strategy is that we always wrap downloaded code inside a Function/AsyncFunction
+    for the dynamic module's initialization:
+    - this permits passing global variables available to module's initialization
+    - BUT, this prevent ES6 usage of 'import/export' statements since those CANNOT be used within functions
+
+    todo: find a way to 'detect' pure ES6 modules
+          ...then, find way to import them as is (i.e. no transpilation required)
+
+    becomes a 3rd way to try and load module (1st 2 are amd, cjs)
+    - either with pure eval() OR create <script type=module> tag and add to body
+
+    issues with ES6 modules: import 'x'; what is x? relative to page/website? or NPM module? but then, from where?
+    - probably should be controlled from website, so possibly a 302/redirect or just direct download from website (from
+      its own node_modules folder)
+
+    note: eval does NOT support import/export syntax so can't use it to load es6 module
+
+    Closest to this will be dynamic imports: import(url).then(...)
+    - but not currently supported in Firefox (experimental with manual switch) or Edge (no timeline)
+
+    
+
+    // method below "works" but no way to extract resulting module (so, not really loading a module)
+
+    async function loadAsScript({url, code, type = 'module'}) {
+
+        // used to load code directly as script
+        // in particular, works for ES6 modules (i.e. which use non-transpiled import/export statements)
+
+        // with this method, use either url or code (code used if both specified)
+
+        // read: https://developer.mozilla.org/en-US/docs/Web/API/HTMLScriptElement#Dynamically_importing_scripts
+
+        // LOTS OF ISSUES with loading js code using <script> technique (below)
+
+        // BIGGEST ISSUE: script "result" (i.e. the module, or its exports) is NOT accessible
+        //                to the outside world: there is no way to IMPORT whatever the module
+        //                is exporting. So no easy way to load individual modules for composition/usage
+        //                by other modules (e.g. a plugin system)
+
+        // Other issues:
+        //  - scripts load in full context of app
+        //      - could be good (if trusted scripts) or not
+        // - CANNOT set GLOBALS as per Function/AsyncFunction except by setting them VIA 'window.'
+        // - maybe that's not so bad
+
+        return new Promise((resolve,reject) => {
+
+            // required for both methods
+            const body = document.body;//getElementsByTagName('body')[0];
+            const script = document.createElement('script');
+            script.type=type;//.setAttribute('type', type); // must be 'module' if js code uses import/export
+
+            // make it unique (in case used for window/global custom onload method)
+            const scriptID = ('module_' + Math.random() ).replace(/[^a-z0-9_]+/ig,'');
+            // script.id = scriptID;//.setAttribute('id', scriptID); // must be 'module' if js code uses import/export
+
+            function getModuleResults() {
+                console.log('ES6 Module resolving to x', script, script.module, script.exports);
+                resolve(script);
+            }
+
+            script.onerror = function(...args) {
+
+                // REGARDLESS of method: will be called on ANY code execution error
+                console.log('JAVSCRIPT MODULE LOAD ERROR', url || code, args, ';;;');
+                reject(new Error(`ES6 Module loaded but has errors`));
+            }
+
+            if (code) { // favor this one (if both specified) since code already downloaded
+
+                // only onerror can be triggered (never onload) so no 'native' way to know it finished loading
+                // our workaround is to explicitly append our we-b-done method
+                // will NOT work if code does not execute till the end (e.g. a top-level return)
+
+                // will need a window/global name for callback
+                const customOnLoad = scriptID + '_loading_complete';
+
+                // so required to know when initialization code ends
+                window[customOnLoad] = () => {
+                    //console.log('ES6 Module loaded OK, looks like it worked!', url || code);
+                    getModuleResults();
+                }
+
+                // then (only onerror can be triggered so append our custom onload)...
+                script.appendChild(document.createTextNode(`"use strict";\n\n${code}\n\n;${customOnLoad}()`));
+            }
+            else { // uses src attribute (browser will do the download)
+
+                // required: to know when loaded
+                script.onload = function(...args) {
+                    
+                    // CALLED (after execution) if using src=url (and code is good)
+                    // NOT CALLED when loading via srcCode
+
+                    //console.log('ES6 MODULE ONLOAD CALLED: well, something happened', args, ';;;');
+                    getModuleResults();
+                }
+
+                // both onload and onerror can be triggered
+                script.setAttribute('src', url); 
+            }
+
+            // trigger loading process...
+            body.appendChild(script);
+        });
+    }
+*/
