@@ -327,5 +327,70 @@ Read [NPM package.json DOC](https://docs.npmjs.com/files/package.json) and also 
 */
 
 
+// Using WITH and PROXY to create an execution context (e.g. for a plugin):
+// - https://gist.github.com/soareschen/9b63a016174b6123abc073a2be068d48
+// - read: http://2ality.com/2014/01/eval.html
+// VERY convenient to add GLOBAL variables without explicitly defining it them upfront
+// as required when using new Function(); good when there are MANY such variables
+// BUT, gist above is NOT secure:
+//  can ALWAYS access GLOBAL context: (0,eval)('this')
+// UNLESS override EVAL && FUNCTION directly
+// because if not ovveriden, can always access it directly using:
+//    Object.getPrototypeFor(function(){}).constructor(...stringParms, 'function code here');
+
+
+## Security
+
+// BEST APPROACH to security for now: warn that dynamically loaded code has ACCESS TO EVERYTHING
+
+/*
+   Trying to sandbox dynamic code by protecting/securing the global window object 
+   is a LOSING PROPOSITION:
+   - it can add a lot of code (as per below)
+   - a large amount of overhead (so likely performance hit)
+   - and unless each case is considered individually, it's not clear that dynamic code
+     will be appropriately sand-boxed
+   - can always load by adding script tag (or iframe or img or audio/video or ?) and that would
+     be VERY hard to prevent (unless prevent document manipulation)
+
+   code below was an attempt in that direction: 
+   - it is NOT currently used anywhere (or tested, or completed)
+   - it MUST NOT be used anywhere else
+   - it is kep here strictly for reference
+
+    ### Javascript REALMS WILL SOLVE THESE issues
+    - we'll wait for this to become part of the language
+    - currently at stage 2 in TC39
+
+    There is no easy way to prevent module code from accessing main window object, 
+    even if proxying all vars using 'with' because even without using any names, 
+    Object.getPrototypeOf(function(){}).constructor(...parms, `window; (0,eval)('this')`) will
+    gain access to top window unless CHANGE (function(){}).constructor itself
+    which would change it FOR EVERYONE (which may be OK)
+    - still does NOT prevent code from explicitly loading directly from script element
+
+    ### REALMS are likely what I'm looking for to execute 3rd-party code using a separate 
+    // (i.e. self-contained) global context;
+    // TODO: wait until REALMS/SES are at TC39 Stage 3 level before implementing
+    //       - in the meantime, NO global security for dynamic modules/plugins
+    //       - BUT:
+    //          - no worse than, say, jquery plugins, that work in main/global/user space anyway
+    //          - no worse than php wordpress plugins that also work in user space and can take down
+    //            a site, or spy for information
+    // - READ about REALMS and SES:
+    //   - read: https://ocapjs.org/ (forum about javascript items, esp. relating to security)
+    //   - REALMS:
+    //      - not currently transpilable from babel (feb 12, 2019)
+    //      - best to wait until realms at least at stage 3
+    //      - read: https://gist.github.com/dherman/7568885
+    //      - read: https://github.com/tc39/proposal-realms
+    //      - read: https://github.com/tc39/proposal-realms/tree/master/shim
+    //   - SES: Secure EcmaScript
+    //      - https://github.com/Agoric/SES
+    //      - based on Google CAJA SES
+    //        - https://developers.google.com/caja/
+    //        - https://github.com/google/caja/wiki/SES
+*/
+
 ```
 

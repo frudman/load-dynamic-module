@@ -111,9 +111,6 @@ class ModuleLoadError extends Error {
 // cheap means to ensure no infinite loop while resolving dependencies
 const LONGEST_LIKELY_DEPENDENCY_CHAIN = 30; // number of modules depending on me BEFORE I'm initially resolved
 
-// TODO: if change name of this class (e.g. Modulex), does this affect plugin-loader.js???
-// PROBABLY YES!!!
-
 class DynamicModule {
 
     // really just a Module but that name conflicts with ES6 'Module' name used by modern browsers (when loading
@@ -187,7 +184,12 @@ class DynamicModule {
             if (typeof moduleDefine !== 'function') 
                 throw new ModuleLoadError(`expecting 'define' to be a function (was ${typeof moduleDefine})`);
 
-            // SIMPLE STRATEGY 1: implement as AMD wants
+            // if (args.length > 0) {
+
+            // }
+            // else 
+
+            // SIMPLE STRATEGY 1: implement as AMD expects (a single array of dependencies)
             const externals = args.pop() || [];
             if (!Array.isArray(externals))
                 throw new ModuleLoadError(`expecting '[dependencies]' to be an array (was ${typeof externals})`);
@@ -466,10 +468,11 @@ async function privateLoader(config, ...args) {
                     // - Use AsyncFunction in case module code uses async requires
                     // - could initModule.bind(x) but this would change meaning of 'this' within module: default is global/window object
                     //    - this could be a means to protect the window object if needed (e.g. by replacing it with null, or a proxying object)
-                    const initModule = new AsyncFunction(...Object.keys(amdProxy), moduleSourceCode);
+                    const initModule = (new AsyncFunction(...Object.keys(amdProxy), moduleSourceCode)).bind({hellofresh: 123});
 
                     try { 
                         // pass #1: try it as an AMD module first
+                        const window = { hellofresh: "www"};
                         const nonAMDResult = await initModule(...Object.values(amdProxy));
 
                         // no errors
