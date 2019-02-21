@@ -95,7 +95,7 @@ function getModuleMetaOrCreate(id) {
     return loadedModules[id] || (loadedModules[id] = new DynamicModule({id}));
 }
 
-function getModuleOrError(config, ref) {
+function getPreloadedModule(config, ref) {
 
     // this is a SYNC module (to be used within AMD & CJS 'require')
     // returns actual module (i.e. moduleMeta.module) if it exists AND is loaded
@@ -230,6 +230,8 @@ const publicLoader = createLoader({
     urlResolvers, // where to download from
     loaders, // once downloaded, how to load it
 
+    log(...args) { console.log('[LOADING-DYNAMIC-MODULE]', ...args) },
+
     alwaysAsArray: false, // if false and loading single module, will get back that module (not an array of 1 element)
     useStrict: true, // forces strict mode on loaded modules (recommended): will prepend '"use strict";\n\n' before loading modules
 });
@@ -252,7 +254,7 @@ async function internalLoader(...args) {
         // - so unloadable modules (e.g. network or syntax errors) are set to the ERROR that made them fail (can test for 'module instanceof Error')
         // - so reject clause (of Promise above) would NEVER be used
 
-        const {baseUrl, urlResolvers, loaders, alwaysAsArray} = config; // extract config parms
+        const {baseUrl, urlResolvers, loaders, alwaysAsArray, log} = config; // extract config parms
 
         const downloads = [];
         for (const dep of args) {
@@ -294,7 +296,7 @@ async function internalLoader(...args) {
                             const done = module => { 
                                 depModule.resolved(module); // will trigger .dependsOnMe listener from above
                                 moduleReady(module); // depModule.module === module
-                                log(`MODULE [[${requestUrl}]] LOADED`, depModule.isLoadedWithError ? 'w/' + module : '');
+                                log(requestUrl, depModule.isLoadedWithError ? 'LOAD ERROR: ' + module.message : 'LOADED');
                             } 
 
                             download(requestUrl)
@@ -311,8 +313,8 @@ async function internalLoader(...args) {
                         }));
                     }                
                 }
-                else { // IMMEDIATE [string-based] DATA
-                    addDependency(loaders.find(loader => loader.t(type)).c(data)); // also process it via loaders
+                else { // IMMEDIATE [string-based] DATA so use it after processed via loaders
+                    addDependency(loaders.find(loader => loader.t(type)).c(data));
                 }
             }
             else { // ACTUAL OBJECT
@@ -332,7 +334,7 @@ async function initJSModule(config, moduleUrl, moduleSourceCode) {
 
     return new Promise(async resolveJSM => { 
 
-        const {globals, useStrict} = config; // extract config parms
+        const {globals, useStrict, log} = config; // extract config parms
 
         // when resolving RELATIVE-based sub-modules, config is same as parent/asking-module
         // except for its baseUrl which now reflects its parent module
@@ -342,8 +344,10 @@ async function initJSModule(config, moduleUrl, moduleSourceCode) {
         
         // basic safety & better performance: is that safe for every module?
         useStrict && (moduleSourceCode = '"use strict";\n\n' + moduleSourceCode);
+
+        const preloadedModules = name => getPreloadedModule(subModulesConfig, name);
     
-        const {isResolved, moduleGlobals, getExports} = genModuleInitMethods(subModulesConfig, resolveJSM, dependenciesLoader);
+        const {isResolved, moduleGlobals, getExports} = genModuleInitMethods(dependenciesLoader, preloadedModules, resolveJSM);
 
         try { 
             // customize module's virtual globals
@@ -360,12 +364,12 @@ async function initJSModule(config, moduleUrl, moduleSourceCode) {
             isResolved() || resolveJSM(getExports() || nonAMDResult); // may already have been resolved through genModuleInitMethods
         }
         catch(err) {
-            resolveJSM(err instanceof RequiredModuleMissingError ? err : new ModuleLoadError(`failed to initialize module ${moduleUrl} (${err.message})`, err));
+            resolveJSM(err instanceof RequiredModuleMissingError ? err : new ModuleLoadError(`module ${moduleUrl} initialization failed (${err.message})`, err));
         }
     });
 }
 
-function genModuleInitMethods(config, moduleResolve, loadSubModules) {
+function genModuleInitMethods(preloadSubModules, getPreloadedModule, moduleResolve) {
 
     // generates define & require methods used by AMD modules, and module.exports used by CJS modules
     // once a module is resolved, moduleResolved is called with the resolved module
@@ -411,10 +415,10 @@ function genModuleInitMethods(config, moduleResolve, loadSubModules) {
             const depsArray = args.pop() || []; 
             if (Array.isArray(depsArray)) {
                 depsArray.length > 0 && 
-                    externalDeps.push(...(await loadSubModules(...depsArray))); // always an array (as per config.alwaysAsArray)
+                    externalDeps.push(...(await preloadSubModules(...depsArray))); // always an array (as per config.alwaysAsArray)
             }
             else
-                return resolveModuleAs(new ModuleLoadError(`expecting '[dependencies]' to be an array (was ${typeof externals})`));
+                return resolveModuleAs(new ModuleLoadError(`expecting array of dependencies (was ${typeof externals})`));
         }
 
         try {
@@ -423,7 +427,7 @@ function genModuleInitMethods(config, moduleResolve, loadSubModules) {
             resolveModuleAs(actualModule);
         }
         catch(err) {
-            resolveModuleAs(new ModuleLoadError(`unexpected error in definition method (${err.message})`, err));
+            resolveModuleAs(new ModuleLoadError(`define method failed (${err.message})`, err));
         }
     }
 
@@ -433,7 +437,7 @@ function genModuleInitMethods(config, moduleResolve, loadSubModules) {
             if (args.length === 0 && typeof req === 'string') {
                 // uses basic form: require('dependency-reference');
                 // we expect 'dependency-reference' to have been [extracted then] pre-loaded...
-                return getModuleOrError(config, req); // ...else may throw RequiredModuleMissingError
+                return getPreloadedModule(req); // ...else may throw RequiredModuleMissingError
             }
             else if (typeof req === 'function') {
                 // treat it as if it's [assumes it's] a define?
@@ -445,7 +449,7 @@ function genModuleInitMethods(config, moduleResolve, loadSubModules) {
                 define(...args, req);
             }
             else {
-                throw new Error(`unexpected parameters for require`);
+                resolveModuleAs(new ModuleLoadError(`unexpected parameters for require method (neither string nor function)`));
             }
         }
         catch(err) {
