@@ -212,12 +212,12 @@ const newConfig = (original, updates = {}) => ({
 
 function createLoader(baseConfig, overrides = {}) {
     const customConfig = newConfig(baseConfig, overrides);
-    const customLoader = privateLoader.bind(customConfig);
+    const customLoader = internalLoader.bind(customConfig);
     customLoader.load = customLoader; // can use fcn(...) OR can chain in single call fcn.config({...}).knownModule().load(...)
     customLoader.knownModule = knownModule.bind({config: customConfig, baseLoader: customLoader});
     customLoader.config = createLoader.bind(null, customConfig);
 
-    customLoader.all = () => loadedModules;
+    //customLoader.all = () => loadedModules; // for debug
 
     return customLoader;
 }
@@ -240,7 +240,7 @@ export default publicLoader;
 // and while we're at it...
 publicLoader.knownModule('load-dynamic-module', publicLoader);
 
-async function privateLoader(...args) {
+async function internalLoader(...args) {
 
     const config = this;
 
@@ -284,11 +284,10 @@ async function privateLoader(...args) {
                         }));
                     }
                     else {
-                        log('need to download', requestUrl);
                         downloads.push(new Promise(resolvex => {
 
-                            // MUST add an .dependsOnMe() right away to mark this module as UNRESOLVED
-                            depModule.dependsOnMe(() => log(`MODULE [[${requestUrl}]] LOADED ${depModule.isLoadedWithError ? 'w/ERROR' : ''}`));
+                            // MUST add an initial .dependsOnMe() RIGHT AWAY to mark this module as now known but still UNRESOLVED
+                            depModule.dependsOnMe(() => log(`MODULE [[${requestUrl}]] LOADED ${depModule.isLoadedWithError ? 'w/ERROR: ' + depModule.module.message : ''}`));
 
                             const done = module => { depModule.resolved(module); resolvex(depModule.module); } // depModule.module === module
 
@@ -301,7 +300,7 @@ async function privateLoader(...args) {
                                     done(/javascript/i.test(treatAsType) ? await initJSModule(config, actualUrl, asLoaded) : asLoaded);
                                 })
                                 .catch(err => {
-                                    done(new DownloadError(`module ${requestUrl} failed to download`, err));
+                                    done(new DownloadError(`module ${requestUrl} not downloaded (${err.code})`, err));
                                 });
                         }));
                     }                
@@ -334,7 +333,7 @@ async function initJSModule(config, moduleUrl, moduleSourceCode) {
         // except for its baseUrl which now reflects its parent module
         const subModulesConfig = newConfig(config, {baseUrl: moduleUrl, alwaysAsArray: true});
         
-        const dependenciesLoader = privateLoader.bind(subModulesConfig);
+        const dependenciesLoader = internalLoader.bind(subModulesConfig);
         
         // basic safety & better performance: is that safe for every module?
         useStrict && (moduleSourceCode = '"use strict";\n\n' + moduleSourceCode);
@@ -349,14 +348,14 @@ async function initJSModule(config, moduleUrl, moduleSourceCode) {
             const deps = extractRequireDependencies(moduleSourceCode); // extract them...
             await dependenciesLoader(...deps); // pre-load them...
             
-            // Try loading the module as either AMD or CJS (probably no longer need to be AsyncFunction)
+            // Try loading the module: using AsyncFunction prevents 1 module from blocking all others
             const initModule = new AsyncFunction(...Object.keys(moduleGlobals), moduleSourceCode);
 
             const nonAMDResult = await initModule(...Object.values(moduleGlobals));
             isResolved() || resolveJSM(getExports() || nonAMDResult); // may already have been resolved through genModuleInitMethods
         }
         catch(err) {
-            resolveJSM(err instanceof RequiredModuleMissingError ? err : new ModuleLoadError(`Failed to load module[${moduleUrl}]`, err));
+            resolveJSM(err instanceof RequiredModuleMissingError ? err : new ModuleLoadError(`failed to initialize module ${moduleUrl} (${err.message})`, err));
         }
     });
 }
@@ -419,7 +418,7 @@ function genModuleInitMethods(config, moduleResolve, loadSubModules) {
             resolveModuleAs(actualModule);
         }
         catch(err) {
-            resolveModuleAs(new ModuleLoadError(`unexpected error in definition method`, err));
+            resolveModuleAs(new ModuleLoadError(`unexpected error in definition method (${err.message})`, err));
         }
     }
 

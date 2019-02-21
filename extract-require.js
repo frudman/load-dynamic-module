@@ -71,33 +71,53 @@
 const commentsPat = /(['"`])(\\\1|(?:(?!\1)[^]))*?\1|[/][/].*|[/][*][^]*?[*][/]/g ,
       requireDepPat = /(?:(['"`])(\\\2|(?:(?!\2)[^]))*?\2)|(?:[.$_]\s*require)|\b(require\s*[(](\s*(['"`])(((?!\5).)+?)\5\s*[)]|[^)]+?[)]))/g ;
 
-function removeComments(code) {
-    return code.replace(commentsPat, full => (full[0] === '/') ? (full[1] === '/' ? '' : /\n/.test(full) ? '\n' : ' ') : full);
-}
+const stripComments = code => code.replace(commentsPat, full => (full[0] === '/') ? (full[1] === '/' ? '' : /\n/.test(full) ? '\n' : ' ') : full);
 
-export function extractRequireDependencies(fcn, makeAwaitable = false) {
+export function extractRequireDependencies(fcn) {
 
-    // this method extracts all deps (i.e. 'dep') from "require('dep');" statements in the function fcn
-    // fcn can be either a string (source code) or an actual function (we get its string representation below)
+    // this method extracts all deps (i.e. 'dep' from "require('dep');" statement) in the function fcn
+    // fcn can be either a string (source code) or an actual function (we'll use its string representation below)
 
-    // capture source code from fcn (as string or as an actual function, hence .toString())
     // important to remove comments, else they can obscure 'require' pattern matching
-    const fcnCode = removeComments(fcn.toString()); 
+    const fcnCode = stripComments(fcn.toString()); 
 
     const dependencies = [];
-    const finalCode = fcnCode.replace(requireDepPat, (full, skip1, skip2, fullRequire, requireParms, requireQuote, requireDep) => {
-        if (requireDep) {
-            dependencies.push(requireDep.trim()); // extract...
-            return fullRequire; // return as-is (static string so no need for await)
-        }
-        else { // possibly dynamic require: need to make asynchronous
-            // construct below (with prepended 'await') will FAIL if anything follows require 
-            // [such as 'require(...).field' or 'require(...)(...immediate function call...)'] because 
-            // right-associativity precedence rule means that the full expression will be awaited (wrong for us) 
-            // rather than just the (await require()) part...
-            return (makeAwaitable ? 'await ':'') + fullRequire; // ...so must use with care, only in simplest of cases
-        }
+    fcnCode.replace(requireDepPat, (full, skip1, skip2, fullRequire, requireParms, requireQuote, requireDep) => {
+        requireDep && dependencies.push(requireDep.trim()); // extract...
+        return fullRequire; // return as-is
     });
 
-    return makeAwaitable ? [dependencies, finalCode] : dependencies;
+    return dependencies;
 }
+
+/*
+    // AN ALTERNATIVE BELOW: could be used to transpile sync code into awaitable (so can await dynamic requires)
+    // but with BIG CAVEAT that adding 'await' to non-async functions (i.e. not top-level) will render erroneous code
+
+    export function extractRequireDependencies(fcn, makeAwaitable = false) {
+
+        // this method extracts all deps (i.e. 'dep' from "require('dep');" statement) in the function fcn
+        // fcn can be either a string (source code) or an actual function (we'll use its string representation below)
+
+        // important to remove comments, else they can obscure 'require' pattern matching
+        const fcnCode = stripComments(fcn.toString()); 
+
+        const dependencies = [];
+        const finalCode = fcnCode.replace(requireDepPat, (full, skip1, skip2, fullRequire, requireParms, requireQuote, requireDep) => {
+            if (requireDep) {
+                dependencies.push(requireDep.trim()); // extract...
+                return fullRequire; // return as-is (static string so no need for await)
+            }
+            else { // possibly dynamic require: need to make asynchronous
+                // construct below (with prepended 'await') will FAIL if anything follows require 
+                // [such as 'require(...).field' or 'require(...)(...immediate function call...)'] because 
+                // right-associativity precedence rule means that the full expression will be awaited (wrong for us) 
+                // rather than just the (await require()) part...
+                return (makeAwaitable ? 'await ':'') + fullRequire; // ...so must use with care, only in simplest of cases
+            }
+        });
+
+        return makeAwaitable ? [dependencies, finalCode] : dependencies;
+    }
+
+*/
