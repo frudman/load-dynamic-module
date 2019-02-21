@@ -270,26 +270,32 @@ async function internalLoader(...args) {
                       url = isData ? '' : isHttpx ? (m[3] + '://' + m[5]) : m[5],
                       type = m[3]; // if explicit (here), takes precedence over downloaded content-type
 
-                // globalName && (window[globalName] = finalVALUE); // where is this done???
+                const makeGlobal = m => (globalName && (window[globalName] = m), m);
+                const addDependency = m => downloads.push(makeGlobal(m));
 
                 if (url) { // DOWNLOAD DATA
                     const requestUrl = urlResolvers.find(resolver => resolver.t(url, baseUrl)).r(url, baseUrl);
 
                     const depModule = getModuleMetaOrCreate(requestUrl);
                     if (depModule.isLoaded)
-                        downloads.push(depModule.module); // no need for a promise, already resolved
+                        addDependency(depModule.module); // no need for a promise, already resolved
                     else if (depModule.isUnresolved) {
-                        downloads.push(new Promise(resolveDownload => {
-                            depModule.dependsOnMe(() => resolveDownload(depModule.module));
+                        downloads.push(new Promise(moduleReady => {
+                            depModule.dependsOnMe(() => moduleReady(makeGlobal(depModule.module)));
                         }));
                     }
                     else {
-                        downloads.push(new Promise(resolvex => {
+                        downloads.push(new Promise(moduleReady => {
 
-                            // MUST add an initial .dependsOnMe() RIGHT AWAY to mark this module as now known but still UNRESOLVED
-                            depModule.dependsOnMe(() => log(`MODULE [[${requestUrl}]] LOADED ${depModule.isLoadedWithError ? 'w/ERROR: ' + depModule.module.message : ''}`));
+                            // MUST IMMEDIATELY add an initial .dependsOnMe() 
+                            // to mark this module as now-known but still UNRESOLVED
+                            depModule.dependsOnMe(() => makeGlobal(depModule.module));
 
-                            const done = module => { depModule.resolved(module); resolvex(depModule.module); } // depModule.module === module
+                            const done = module => { 
+                                depModule.resolved(module); // will trigger .dependsOnMe listener from above
+                                moduleReady(module); // depModule.module === module
+                                log(`MODULE [[${requestUrl}]] LOADED`, depModule.isLoadedWithError ? 'w/' + module : '');
+                            } 
 
                             download(requestUrl)
                                 .then(async downloaded => {
@@ -306,12 +312,11 @@ async function internalLoader(...args) {
                     }                
                 }
                 else { // IMMEDIATE [string-based] DATA
-                    const asLoaded = loaders.find(loader => loader.t(type)).c(data);
-                    downloads.push(asLoaded);//{ type, data, globalName, }); // may still pass through loaders
+                    addDependency(loaders.find(loader => loader.t(type)).c(data)); // also process it via loaders
                 }
             }
             else { // ACTUAL OBJECT
-                downloads.push(dep);//{ finalVALUE: dep }); // all done: not a remembered module
+                downloads.push(dep); // all done: not a remembered module
             }
         }
 
