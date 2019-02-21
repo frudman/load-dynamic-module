@@ -1,3 +1,14 @@
+// code below is an INCOMPLETE attempt to use EVAL instead of Function
+// and so can use 'with' statement (so NOT strict) to create scope-like
+// layers of globals. These would then be presented as an array
+// of Proxy objects, with those above (i.e. lower index) overriding
+// those lower down in the array (i.e. with higher indexes)
+
+
+// todo: other misc notes below to be pulled into the main README.md file
+// todo: write up findings from below and Realms and SES
+
+
 /* do NOT "use strict"; because that invalidates using 'with' statement below */
 /* do NOT use 'import' or 'export' because that will implicitly triggers strict mode */
 /* hence, we use the module.exports below form (which does not trigger strict mode) */
@@ -172,66 +183,6 @@
     }
 */
 
-
-// can verify regular expressions here: https://www.regexpal.com/ and https://regex101.com/ 
-const toRegEx = (srcRE,bs,flags) => new RegExp(srcRE.replace(/[#].*/g, '').replace(/\s+/g,'').replace(bs, '\\'), flags);
-
-const commentsPat = toRegEx(`
-    ## must look for (and ignore) quoted strings because could contain text that looks like comments
-
-    ## quoted strings
-    (['"\`])                    ## start (opening quote); becomes ~1
-    (~~~1|(?:(?!~1)[~s~S]))*?   ## quoted content (sans quotes); ~~~1 allows for embedded quotes
-    ~1                          ## end (same as opening quote)
-  |
-    ## comments
-      [/][/].*              ## end-of-line
-    |
-      [/][*][~s~S]*?[*][/]  ## multiline
-`, /[~]/g, 'g');
-
-function removeComments(code) {
-    //const comments = /(['"`])(\\\1|(?:(?!\1)[\s\S]))*?\1|[/][/].*|[/][*][\s\S]*?[*][/]/g;
-    return code.replace(commentsPat, full => (full[0] === '/') ? (full[1] === '/' ? '' : /\n/.test(full) ? '\n' : ' ') : full);
-}
-
-// function removeQuotesAndComments(code) {
-//     const comments = /(['"`])(\\\1|(?:(?!\1)[\s\S]))*?\1|[/][/].*|[/][*][\s\S]*?[*][/]/g;
-//     return code.replace(comments, full => (full[0] === '/') ? (full[1] === '/' ? '' : /\n/.test(full) ? '\n' : ' ') : full);
-// }
-
-function genExtractRequiresPat(requireName) {
-    return toRegEx(`## using '~' as backslash character (easier than to have to double them up: \\)
-
-        (?:
-            ## ignore quoted strings because may include require-like text
-            (['"\`]) ## string start (will become \\2)
-            (~~~2|(?:(?!~2)[~s~S]))*? ## actual string content: allows for escaped quote
-            ~2 ## string end
-        )   
-      |
-        (?:
-            ## ignore 'embedded_requires' or used as someones.require property
-            [.$_]~s*${requireName}
-        )
-      |
-        ~b
-        (   ## the FULL_REQUIRE part we want
-            ${requireName}~s*[(]     ## 'require(' including opening paren
-            (
-                ## simple-string require
-                ~s*
-                (['"\`])      ## opening quote: 3rd paren in (skipping over non-captured groups)
-                (((?!~3).)+?) ## REQUIRE_DEP content: we ignore escaped/embedded quotes: too much an edge case for this
-                ~3~s*[)]      ## closing quote and trailing closing paren
-              |
-                ## non-simple-string require (either an expression or multiple parms)
-                [^)]+?[)]  
-            )
-        ) 
-    `, /[~]/g, 'g')
-}
-
 /*
     // AMD: https://requirejs.org/docs/api.html
 
@@ -282,38 +233,6 @@ function genExtractRequiresPat(requireName) {
             // AMD using the the require format: need to extract required deps
 */
 
-function extractRequireDependencies(fcn, makeAwaitable = false) {
-
-    // call this method when you know there are going to be 'require('x');' inside the function
-
-    // AMD using the the require format: need to extract required deps
-
-    // capture source code (direct or via function)
-    // important to remove comments, else they can obscure 'require' pattern matching
-    const fcnCode = removeComments(fcn.toString()); 
-
-    const //functionParmsPat = /^\s*function\s*[(]\s*([^)]+)[)]/,
-          //reqname = fcnCode.match(functionParmsPat)[1], // extracts parm names
-          requireDepPat = genExtractRequiresPat('require');//reqname);
-
-    const dependencies = [];
-    const finalCode = fcnCode.replace(requireDepPat, (full, fullRequire, requireParms, requireQuote, requireDep) => {
-        if (requireDep) {
-            dependencies.push(requireDep.trim());
-            return fullRequire;
-        }
-        else {
-            // construct below (with prepended 'await') will FAIL if anything follows require 
-            // [such as 'require(...).field' or 'require(...)(...immediate function call)'] because 
-            // right-associativity precedence rule means that the full expression will be awaited (wrong for us) 
-            // rather than just the (await require()) part
-            return (makeAwaitable ? 'await ':'') + fullRequire; // so must use with care (i.e. only in simplest of cases)
-        }
-    });
-
-    return [dependencies, finalCode, require, exports, module]; // also know if defined as (require, exports, module)
-}
-
 // RULE: in order to import CJS modules, some code transpiling is required. In some edge cases, the transpiling may fail.
 // for those cases, changing the edge case(s) if best else use an AMD version of that module (used as-is, no transpilation)
 // edge cases:
@@ -321,36 +240,6 @@ function extractRequireDependencies(fcn, makeAwaitable = false) {
 //  - comment(s) between 'require' and the opening paren '(' or within the parentheses (i.e. before the closing paren)
 //  - embedded tick-quoted-text inside another tick-quoted-text: e.g. const x = `this is some ${choice? `1` : `2`} text`;
 //      - although, if no require in between, might work since tick marks should be balanced (right?)
-
-function xxextractDependencies(srcCode) {
-
-    // can verify this here: https://www.regexpal.com/ and https://regex101.com/ 
-
-    // quotes required in both so as to not process quoted text that looks like a comment or require
-    const comments = /(['"`])(\\\1|(?:(?!\1)[\s\S]))*?\1|[/][/].*|[/][*][\s\S]*?[*][/]/g;
-    const requires = /((['"`])(\\\2|(?:(?!\2)[\s\S]))*?\2)|([.$_]\s*require)|\b(require\s*[(](\s*(['"`])(((?!\7).)+?)\7\s*[)]|[^)]+?[)]))/g;
-
-    const dependencies = [];
-    const modifiedCode = srcCode
-        .replace(comments, full => { // do comments first so have clean whitespace to work with on requires
-            return (full.length > 1 && full[0] === '/') ? (full[1] === '/' ? '' : full.indexOf('\n') === -1 ? ' ' : '\n') : full;
-        })
-        .replace(requires, (full, quotedText, quoteChar, unquotedText, notRequired, fullRequire, requireParm, requireQuote, requireDep) => {
-            if (quotedText || notRequired) return full;
-            if (requireDep) {
-                dependencies.push(requireDep.trim());
-                return fullRequire;
-            }
-            else {
-                // construct below (prepend 'await') will FAIL if anything follows require (e.g require(...).field 
-                // or require(...)(...immediate function call)) because the await applies to full expression
-                // not just the require part (precedence)
-                return 'await ' + fullRequire; 
-            }
-        });
-
-    return [dependencies, modifiedCode]
-}
 
 /* More involved Strategy 2 (unused for now)
     // find out how many deps the moduleDefine function expects
@@ -388,18 +277,6 @@ function xxextractDependencies(srcCode) {
             throw new ModuleLoadError(`invalid dependency in AMD module definition - can only be a string or an array of strings`);
     }
 */
-
-// BELOW (commented out): this is the module's name (as module author wants it defined, if strictly following AMD define) 
-// - [we're not using it here: code is for reference only]
-// if (args.length === 1 && typeof args[0] === 'string') { ...UNUSED for now...
-//     // maybe set option to use only URLs, URLs AND named defines, or just named defines (if no name, use url)
-//     // to consider: add option in case of conflicts: replace with newer/last-loaded, remove both, keep first (e.g. different url but same name)
-// }
-
-
-
-// do both amd & cjs at once
-// pre-define module, module.exports, require, define
 
 
 // this is NOT secure
@@ -557,190 +434,6 @@ const myPrivateContext = {
     // could add API here...
 }
 
-class ModuleNotLoaded extends Error {
-    constructor(moduleName) {
-        super(`module ${req} not loaded`);
-        this.moduleName = moduleName;
-        // why not? dependencyError?
-    }
-}
-
-class ModuleDependencyError extends Error {
-    constructor(...missingModules) {
-        super(`module not loaded because of failed dependencies`);
-        this.missingDependencies = missingModules;
-    }
-}
-
-class DownloadError extends Error {
-    constructor(...missingModules) {
-    }
-}
-
-// config: load even if dependencies missing; initial baseUrl; use-strict?
-
-function getModuleByName(name, throwIfMissing = true){
-    const loadedModule = SOMEHOW_getModule_SYNC(name); // no await
-    if (loadedModule || !throwIfMissing) return loadedModule || undefined;
-    throw new ModuleNotLoaded(req); // detectable by define or after
-}
-
-// need to add 'require' as known module: points to getModuleByName
-
-async function loadModulesX(...moduleNames) {
-    // needs to keep track of modules; need to keep track of CYCLES
-
-    // needs to load a module based on its parent (and parent's base URL)
-
-    // different types of modules: css, text, ...
-}
-
-function genAMDDefine(thisModule, subDepResolution) {
-
-    //const thisModule = this; // self ref for within amdDefine below
-
-    // IMPORTANT: all AMD modules test for 'define.amd' being 'truthy'
-    //            but some (e.g. lodash) ALSO check that "typeof define.amd == 'object'" so...
-    defineMethod.amd = {}; // ...use an object (truthy) NOT just 'true'
-
-    // keep track of whether or not our define method was actually called...
-    var isAMD = false; // ...because if not called, likely NOT an AMD module
-    function defineMethod(...args) {
-
-        // this is what is actually executed when src code calls define(...)
-
-        // at this point we know we're in an AMD module since this define method was called from module source code
-        // so if any errors after this (e.g. coding errors), we won't bother with trying CJS
-
-        isAMD = true; // yay!
-
-        // now, parse parms as an actual AMD module...
-
-        const moduleDefine = args.pop(); // always last param
-        if (typeof moduleDefine !== 'function') 
-            throw new ModuleLoadError(`expecting module definition to be a function (was ${typeof moduleDefine})`);
-        //
-
-        const externals = [];
-
-        // now get/extract dependencies
-
-        if (args.length > 0) {
-
-            // explicit dependencies
-            // check for dependencies, then execute define [our current code]
-            // SIMPLE STRATEGY 1: implement as AMD expects (a single array of dependencies)
-            
-            const depsArray = args.pop() || []; // expect an array or nothing
-            if (Array.isArray(depsArray))
-                externals.push(...depsArray);
-            else
-                throw new ModuleLoadError(`expecting '[dependencies]' to be an array (was ${typeof externals})`);
-
-            // BUT, if one of these is 'require' THEN need to extract anyway
-        }
-
-        // const usesRequire = external.find(dep => /^require$/.test(dep));
-
-        // if (usesRequire) {
-        //     // will be resolved as part of dep resolution process (each is an independent awaitable task)
-        // }
-
-        if (externals.length === 0) {
-            // NO explicit dependencies passed
-            if (moduleDefine.length === 0) {
-                    // regular module, no deps: just execute define
-                    // fall through
-
-                // BUT, if externals contains 'require', that's probably a mistake
-                // on executing, should still have access to require (as parm? as proxied-global?)
-            }
-            else if (moduleDefine.length >= 1) { // should be 1, 2 or 3
-
-                const [deps, fcnsrc, require, exports, module] = extractRequireDependencies(moduleDefine);
-
-                if (require) {
-                    // need to add require (maybe exports/module) available to name space
-                    // just pre-pend them to deps array: will 
-                    // push to front of array (also exports and module)
-                }
-                else {
-                    // expecting require/exports/module
-                    // not sure what we got...
-                }        
-            }
-            else {
-                // unexpected: warning define seems to expect dep parms, but none (or not proper) specified: executing anyway... 
-                // maybe passed parms expecting them to be 'undefined'?
-                //log.warning('unexpected define usage: seems to expect dep parms, but none specified - executing anyway')
-                // fall through
-            }
-        }
-        else {
-            // if (externals.length !== moduleDefine.length) 
-            //     ; // all good
-            // resolve deps as expected
-                    // mismatch: deps but definitionFcn not expecting any
-                    // - that could be ok if not expecting modules to return anything, where
-                    //   each module may only be used for its side-effect
-        }
-
-        const resolvedDeps = externals.map(dep => {
-            if (dep === 'require'){}
-            else if (dep === 'exports') {}
-            else if (dep === 'module') {}
-            else return thisModule.log(dep);
-        });
-
-        Promise.all(resolvedDeps).then(deps => {
-
-        })
-    
-        // resolve dependencies
-        privateLoader(subDepResolution, ...externals)
-            .then(async depOrDeps => {
-                const resolvedDeps = Array.isArray(depOrDeps) ? depOrDeps : [depOrDeps]; // todo: change this if ALWAYS returning an array
-                const errs = resolvedDeps.filter(dep => dep instanceof Error);
-                if (errs.length > 0) {
-                    // resolved dependencies ERRORS will PREVENT AMD Define method from executing
-                    // - that's a big difference between AMD modules and ours
-                    thisModule.resolved(new ModuleLoadError(`AMD Define method NOT executed because of failed dependencies`, ...errs));
-                }
-                else {
-                    try {
-                        const result = await moduleDefine(...resolvedDeps);
-                        if (typeof result === 'undefined') {
-                            if (explicitlySet) // module.exports = ...
-                                thisModule.resolved(module.exports); // but only if was assigned;
-                            else if (Object.keys(exports).length > 0) // exports.[name] = ...
-                                thisModule.resolved(exports); 
-                            else 
-                                thisModule.resolved();
-                        }
-                        else {
-                            thisModule.resolved(result);
-                        }
-                        
-                    }
-                    catch(err) {
-                        thisModule.resolved(new ModuleLoadError(`AMD Define method failed`, err));
-                    }
-                }
-            })
-    }
-
-    var explicitlySet = false,
-        explicitExports = {};
-    const module = { 
-              get exports() { return explicitExports; },
-              set exports(v) { explicitExports = v; explicitlySet = true; return true; }
-          };
-
-    return { defineMethod, get isAMD() { return isAMD; }, };
-}
-
-// our prime entry point: may need to know baseUrl for dep resolution
-
 const modx = {
     id,
     srcCode, // or fcn
@@ -770,12 +463,6 @@ async function loadX(id, srcCode, privateCtx = {}, globalCtx = window) {
             return err; // could be DownloadError or SyntaxError or anything else; either way, no way for us to recover
         }
     }
-}
-
-async function asCJSCode(srcCode, privateCtx = {}, globalCtx = window) {
-    return new Promise(async (resolve,reject) => {
-
-    });
 }
 
 // really as AMD or NOT-CJS code: could just be basic code: returned result is module
@@ -895,6 +582,7 @@ async function asAMDCode(srcCode, privateCtx = {}, globalCtx = window, extractRe
 
     })
 }
+
 
 // await onModule('name') // promise
 // onModule('name', onload(){}); // also promise but executed AFTER onload completes; OR returns result ofonload?

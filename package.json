@@ -36,7 +36,7 @@
   "author": "Frederic Rudman",
   "license": "ISC",
   "dependencies": {
-    "tidbits": "^1.0.23"
+    "tidbits": "^1.0.24"
   },
   "devDependencies": {
     "@babel/cli": "^7.2.3",
