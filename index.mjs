@@ -264,7 +264,7 @@ async function internalLoader(...args) {
 
                 // since [^] matches everything (including newlines), m will ALWAYS match EVERY string
                 // so no need to test for m (as in m && ...)
-                const m = dep.match(/(\w+[=])?(([a-z]+)([-]data)?[:!])?([^]+)/i), 
+                const m = dep.match(/([a-z0-9_$]+[=])?(([a-z]+)([-]data)?[:!])?([^]+)/i), 
                       globalName = m[1] && m[1].slice(0, -1), // to be assigned as window.[globalName]
                       isData = /data/i.test(m[3]) || m[4],
                       data = isData ? m[5] : '',
@@ -276,11 +276,13 @@ async function internalLoader(...args) {
                 const addDependency = m => downloads.push(makeGlobal(m));
 
                 if (url) { // DOWNLOAD DATA
-                    const requestUrl = urlResolvers.find(resolver => resolver.t(url, baseUrl)).r(url, baseUrl);
 
+                    const requestUrl = urlResolvers.find(resolver => resolver.t(url, baseUrl)).r(url, baseUrl);
                     const depModule = getModuleMetaOrCreate(requestUrl);
-                    if (depModule.isLoaded)
+
+                    if (depModule.isLoaded) {
                         addDependency(depModule.module); // no need for a promise, already resolved
+                    }
                     else if (depModule.isUnresolved) {
                         downloads.push(new Promise(moduleReady => {
                             depModule.dependsOnMe(() => moduleReady(makeGlobal(depModule.module)));
@@ -296,7 +298,8 @@ async function internalLoader(...args) {
                             const done = module => { 
                                 depModule.resolved(module); // will trigger .dependsOnMe listener from above
                                 moduleReady(module); // depModule.module === module
-                                log(requestUrl, depModule.isLoadedWithError ? 'LOAD ERROR: ' + module.message : 'LOADED');
+                                //log(requestUrl, depModule.isLoadedWithError ? 'LOAD ERROR: ' + module.message : 'LOADED');
+                                depModule.isLoadedWithError && log(requestUrl, 'LOAD ERROR: ' + module.message);
                             } 
 
                             download(requestUrl)
@@ -347,7 +350,7 @@ async function initJSModule(config, moduleUrl, moduleSourceCode) {
 
         const preloadedModules = name => getPreloadedModule(subModulesConfig, name);
     
-        const {isResolved, moduleGlobals, getExports} = genModuleInitMethods(dependenciesLoader, preloadedModules, resolveJSM);
+        const { moduleExports, moduleGlobals } = genModuleInitMethods(dependenciesLoader, preloadedModules);
 
         try { 
             // customize module's virtual globals
@@ -355,28 +358,33 @@ async function initJSModule(config, moduleUrl, moduleSourceCode) {
 
             // extract then preload any required dependencies
             const deps = extractRequireDependencies(moduleSourceCode); // extract them...
-            await dependenciesLoader(...deps); // pre-load them...
+            await dependenciesLoader(...deps); // pre-load them... (should never fail?)
             
             // Try loading the module: using AsyncFunction prevents 1 module from blocking all others
             const initModule = new AsyncFunction(...Object.keys(moduleGlobals), moduleSourceCode);
 
-            const nonAMDResult = await initModule(...Object.values(moduleGlobals));
-            isResolved() || resolveJSM(getExports() || nonAMDResult); // may already have been resolved through genModuleInitMethods
+            resolveJSM(await moduleExports(await initModule(...Object.values(moduleGlobals))));
         }
         catch(err) {
-            resolveJSM(err instanceof RequiredModuleMissingError ? err : new ModuleLoadError(`module ${moduleUrl} initialization failed (${err.message})`, err));
+            // would be from globals (possible) or extractRequireDependencies (unlikely)
+            resolveJSM(new ModuleLoadError(`module ${moduleUrl} initialization failed (${err.message})`, err));
         }
     });
 }
 
-function genModuleInitMethods(preloadSubModules, getPreloadedModule, moduleResolve) {
+function genModuleInitMethods(preloadSubModules, getPreloadedModule) {
 
     // generates define & require methods used by AMD modules, and module.exports used by CJS modules
-    // once a module is resolved, moduleResolved is called with the resolved module
+    // a module can be resolved as follows:
+    // - if define is called:
+    //     1- the result of calling define's definition function (may be undefined or error)
+    //     2- the results of exports or module.exports having been assigned from within define's definition function
+    // - if define is NOT called:
+    //     3- the results of exports or module.exports having been assigned from within the module's code
+    //     4- the result of the module's code, if any (i.e. as a top-level return statement)
+    //     5- module's value is undefined (presumably module code runs for its side-effects)
 
-    var isNowResolved = false; 
-    const resolveModuleAs = m => (isNowResolved = true, moduleResolve(m));
-    const isResolved = () => isNowResolved;
+    var exportsFromDefine = false; // if define method is called, that will be the module's value
 
     const exports = {}, // or use Object.create(null) instead?
           module = { exports };
@@ -384,51 +392,53 @@ function genModuleInitMethods(preloadSubModules, getPreloadedModule, moduleResol
     const exportsUsed = () => Object.keys(exports).length > 0, // means 'exports.[name] = ...' form was used
           moduleExportsAssigned = () => module.exports !== exports; // means 'module.exports = ...' form was used
 
-    const getExports = () => exportsUsed() ? exports : moduleExportsAssigned() ? module.exports : undefined;
+    const getExports = m => exportsUsed() ? exports : moduleExportsAssigned() ? module.exports : m;
 
     // IMPORTANT: all UMD modules test for 'define.amd' being 'truthy'
     //            but some (e.g. lodash) ALSO check that "typeof define.amd == 'object'" so...
     define.amd = {}; // ...use an object (truthy) NOT just 'true'
-    async function define(...args) {
+    function define(...args) { 
         
-        // at this point we know we're in an AMD module since this define method was called from module source code
-        // so parse args as per AMD modules and [any] results (or errors) becomes this module's value
+        // CANNOT be async else init may complete before init is done!!!
+        // but let getResults method know to wait for answers
 
-        const moduleDefine = args.pop(); // always last param
-        if (typeof moduleDefine !== 'function') 
-            return resolveModuleAs(new ModuleLoadError(`expecting module definition to be a function (was ${typeof moduleDefine})`));
+        exportsFromDefine = new Promise(resolveModuleAs => {
 
-        const externalDeps = []; // our array of dependent modules
+            // at this point we know we're in an AMD module since this define method was called from module source code
+            // so parse args as per AMD modules and [any] results (or errors) becomes this module's value
 
-        if (args.length === 0) { // no explicit dependencies...
-            if (moduleDefine.length === 0) { 
-                // ...and not using require/exports/module form...
-                // so we're all good
+            const moduleDefine = args.pop(); // always last param; may be a sync OR async method, so must be prepared
+            if (typeof moduleDefine !== 'function') 
+                return resolveModuleAs(new ModuleLoadError(`expecting module definition to be a function (was ${typeof moduleDefine})`));
+
+            if (args.length === 0) { // no explicit dependencies, so either none at all or expecting simplified commonjs (require, exports, module)...
+                (moduleDefine.length === 0) ? executeModuleDefinition() : executeModuleDefinition(require, exports, module);
             }
-            else { 
-                // ...and expecting parms: [very likely] using the (require,exports,module) format [else likely an error]
-                externalDeps.push(require, exports, module);
+            else { // AMD expects a possibly-empty array of dependencies (or nothing)
+                const depsArray = args.pop() || []; 
+                if (Array.isArray(depsArray)) {
+                    if (depsArray.length > 0) { 
+                        preloadSubModules(...depsArray) // always an array (as per config.alwaysAsArray)
+                            .then(resolvedDeps => executeModuleDefinition(...resolvedDeps))
+                    }
+                    else 
+                        executeModuleDefinition();
+                }
+                else
+                    resolveModuleAs(new ModuleLoadError(`expecting array of dependencies (was ${typeof externals})`));
             }
-        }
-        else {
-            // AMD expects a possibly-empty array of dependencies (or nothing)
-            const depsArray = args.pop() || []; 
-            if (Array.isArray(depsArray)) {
-                depsArray.length > 0 && 
-                    externalDeps.push(...(await preloadSubModules(...depsArray))); // always an array (as per config.alwaysAsArray)
-            }
-            else
-                return resolveModuleAs(new ModuleLoadError(`expecting array of dependencies (was ${typeof externals})`));
-        }
 
-        try {
-            const possibleModule = await moduleDefine(...externalDeps);
-            const actualModule = exportsUsed() ? exports : moduleExportsAssigned() ? module.exports : possibleModule;
-            resolveModuleAs(actualModule);
-        }
-        catch(err) {
-            resolveModuleAs(new ModuleLoadError(`define method failed (${err.message})`, err));
-        }
+            async function executeModuleDefinition(...externalDeps) {
+                try {
+                    // moduleDefine method may be sync or async: await allows for either
+                    resolveModuleAs(getExports(await moduleDefine(...externalDeps))); 
+                }
+                catch(err) {
+                    resolveModuleAs(new ModuleLoadError(`define method failed (${err.message})`, err));
+                }    
+            }
+
+        });
     }
 
     function require(...args) {
@@ -457,5 +467,9 @@ function genModuleInitMethods(preloadSubModules, getPreloadedModule, moduleResol
         }
     }
 
-    return { isResolved, getExports, moduleGlobals: { define, require, module, exports }};
+    async function moduleExports(originalResult) {
+        return new Promise(async finalExports => finalExports(exportsFromDefine ? await exportsFromDefine : getExports(originalResult)));
+    }
+
+    return {moduleExports, moduleGlobals: { define, require, module, exports }};
 }
