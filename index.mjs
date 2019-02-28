@@ -352,13 +352,19 @@ async function internalLoader(...args) {
                                     done(/javascript/i.test(treatAsType) ? await initJSModule(config, actualUrl, asLoaded) : asLoaded);
                                 })
                                 .catch(err => {
+                                    log('JSON ERR?', err instanceof SyntaxError, err);
                                     done(new DownloadError(`module ${requestUrl} not downloaded (${err.code})`, err));
                                 });
                         }));
                     }                
                 }
                 else { // IMMEDIATE [string-based] DATA so use it after processed via loaders
-                    addDependency(loaders.find(loader => loader.t(type)).c(data));
+                    try {
+                        addDependency(loaders.find(loader => loader.t(type)).c(data));
+                    }
+                    catch(err) {
+                        addDependency(err);
+                    }
                 }
             }
             else { // ACTUAL OBJECT
