@@ -4,8 +4,9 @@
 
 // TODO: seriously consider switching to JSDELIVR.NET (from unpkg.com)
 //       because (as of Feb 2019) unpkg seems to have reliability issues (500/404/403) [growing pains?]
+//       (see: https://w3techs.com/technologies/comparison/cd-jsdelivr,cd-unpkg)
 //       jsdelivr docs: https://www.jsdelivr.com/features
-//       - may affect relative-name dependency resolution
+//       - may affect relative-name dependency resolution (jsdelivr does redirects differently)
 //       - jsdelivr may be best when using amd explicitly, and specifying actual
 //         paths (e.g. 'axios/dist/axios.min.js' instead of 'axios')
 
@@ -91,9 +92,11 @@ const extension = str => (str||'').split('.').pop();
 // e.g. using relative URLs: './helpers/bind' (from within https://unpkg.com/axios@0.18.0/index.js) 
 //      becomes 'https://unpkg.com/axios@0.18.0/lib/helpers/bind'
 
-// keeps track of javascript modules which need to be pre-scanned for embedded
-// 'require's in order to pre-load those: applies to cjs or amd-cjs modules
 const scanForRequires = (function(){
+
+    // keeps track of javascript modules which need to be pre-scanned for embedded
+    // 'require's in order to pre-load those: applies to cjs and amd-cjs modules
+
     const scan = [];
     return {
         add: (...args) => scan.push(...args.map(a => a.replace(/[/][^/]+?[.][^./]+$/, '').toLowerCase())),
@@ -478,15 +481,17 @@ function genModuleInitMethods(preloadSubModules, getPreloadedModule, cjs) {
 
     function require(...args) {
         
-        // thrown errors are propagated to parent
+        // thrown errors are propagated and must be handled by caller
 
         const req = args.pop(); // last or only parm
+        
         if (args.length === 0 && typeof req === 'string') {
             // uses basic form: require('dependency-reference');
             // we expect 'dependency-reference' to have been [extracted then] pre-loaded...
             return getPreloadedModule(req); // ...else may throw RequiredModuleMissingError
         }
-        else if (typeof req === 'function') {
+        
+        if (typeof req === 'function') {
             // treat it as if it's [assumes it's] a define?
             // meaning uses the AMD form of: require([...deps...], fcn(...deps...){}));
             // which is just a define BUT without a module actually being "defined" 
