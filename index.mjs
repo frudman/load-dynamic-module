@@ -2,6 +2,10 @@
 // important: see README.md before using - you've been warned! :-)
 // important
 
+// document that a module name can be used as its base reference
+// - so 'axios=axios/dist/axios.min.js' will now allow 'axios' to be used directly
+// - problem is if a module name matches a window property name (e.g. alert)
+
 // TODO: seriously consider switching to JSDELIVR.NET (from unpkg.com)
 //       because (as of Feb 2019) unpkg seems to have reliability issues (500/404/403) [growing pains?]
 //       (see: https://w3techs.com/technologies/comparison/cd-jsdelivr,cd-unpkg)
@@ -154,7 +158,7 @@ function getPreloadedModule(config, ref) {
 
     const id = urlResolvers.find(resolver => resolver.t(ref, baseUrl)).r(ref, baseUrl);
 
-    const lm = loadedModules[id];
+    const lm = loadedModules[ref] || loadedModules[id];
     if (lm && lm.isLoaded) return lm.module;
     throw new RequiredModuleMissingError(id);
 }
@@ -331,7 +335,7 @@ async function internalLoader(...args) {
                       url = isData ? '' : isHttpx ? (m[3] + '://' + m[5]) : m[5],
                       type = m[3]; // if explicit (here), takes precedence over downloaded content-type
 
-                const makeGlobal = m => (globalName && (window[globalName] = m), m);
+                const makeGlobal = m => (globalName && ((window[globalName] = m), addModule(globalName, m)), m);
                 const addDependency = m => downloads.push(makeGlobal(m));
 
                 if (url) { // DOWNLOAD DATA
