@@ -352,7 +352,6 @@ async function internalLoader(...args) {
                                     done(/javascript/i.test(treatAsType) ? await initJSModule(config, actualUrl, asLoaded) : asLoaded);
                                 })
                                 .catch(err => {
-                                    log('JSON ERR?', err instanceof SyntaxError, err);
                                     done(new DownloadError(`module ${requestUrl} not downloaded (${err.code})`, err));
                                 });
                         }));
