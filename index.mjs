@@ -158,7 +158,7 @@ function getPreloadedModule(config, ref) {
 
     const id = urlResolvers.find(resolver => resolver.t(ref, baseUrl)).r(ref, baseUrl);
 
-    const lm = loadedModules[ref] || loadedModules[id];
+    const lm = loadedModules[ref] || loadedModules[id]; // TODO: should check REF only if it DOESN'T start with ./
     if (lm && lm.isLoaded) return lm.module;
     throw new RequiredModuleMissingError(id);
 }
