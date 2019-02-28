@@ -2,6 +2,13 @@
 // important: see README.md before using - you've been warned! :-)
 // important
 
+// TODO: seriously consider switching to JSDELIVR.NET (from unpkg.com)
+//       because (as of Feb 2019) unpkg seems to have reliability issues (500/404/403) [growing pains?]
+//       jsdelivr docs: https://www.jsdelivr.com/features
+//       - may affect relative-name dependency resolution
+//       - jsdelivr may be best when using amd explicitly, and specifying actual
+//         paths (e.g. 'axios/dist/axios.min.js' instead of 'axios')
+
 // misc helpers
 import { http as download, AsyncFunction, loadCSSCode } from 'tidbits';//'my-npm-packages/freddy-javascript-utils';
 
@@ -83,6 +90,17 @@ const extension = str => (str||'').split('.').pop();
 // e.g. 'assert' becomes 'https://unpkg.com/assert' becomes 'https://unpkg.com/assert@1.4.1/assert.js'
 // e.g. using relative URLs: './helpers/bind' (from within https://unpkg.com/axios@0.18.0/index.js) 
 //      becomes 'https://unpkg.com/axios@0.18.0/lib/helpers/bind'
+
+// keeps track of javascript modules which need to be pre-scanned for embedded
+// 'require's in order to pre-load those: applies to cjs or amd-cjs modules
+const scanForRequires = (function(){
+    const scan = [];
+    return {
+        add: (...args) => scan.push(...args.map(a => a.replace(/[/][^/]+?[.][^./]+$/, '').toLowerCase())),
+        query: (name, lcn = name.toLowerCase()) => !!scan.find(s => lcn.startsWith(s)),
+    }
+})(); 
+
 
 const loadedModules = {}; // holds all modules' meta info (id, module, state)
 const addModule = (id, module) => loadedModules[id] = new DynamicModule({id, module});
@@ -217,20 +235,18 @@ function createLoader(baseConfig, overrides = {}) {
     customLoader.knownModule = knownModule.bind({config: customConfig, baseLoader: customLoader});
     customLoader.config = createLoader.bind(null, customConfig);
 
-    //customLoader.all = () => loadedModules; // for debug
+    //customLoader.all = () => loadedModules; // when debugging
 
     return customLoader;
 }
 
-// our loader with a base configuration
+// our loader with a basic configuration
 const publicLoader = createLoader({
     baseUrl: window.location.href, 
 
     globals: () => {}, // inject globals into execution environment of modules
-    urlResolvers, // where to download from
-    loaders, // once downloaded, how to load it
-
-    log(...args) { console.log('[LOADING-DYNAMIC-MODULE]', ...args) },
+    urlResolvers, // where to download dependencies from
+    loaders, // once downloaded, how to load (interpret) its content
 
     alwaysAsArray: false, // if false and loading single module, will get back that module (not an array of 1 element)
     useStrict: true, // forces strict mode on loaded modules (recommended): will prepend '"use strict";\n\n' before loading modules
@@ -244,9 +260,10 @@ publicLoader.knownModule('load-dynamic-module', publicLoader);
 
 async function internalLoader(...args) {
 
-    const config = this;
-
     // each arg is a module reference or actual string data: see readme.md#module-references
+    // internalLoader must always be explicitly bound to a configuration object (internalLoader.bind({config}))
+
+    const config = this; // for readability
 
     return new Promise(resolveWhenReady => { 
 
@@ -254,13 +271,24 @@ async function internalLoader(...args) {
         // - so unloadable modules (e.g. network or syntax errors) are set to the ERROR that made them fail (can test for 'module instanceof Error')
         // - so reject clause (of Promise above) would NEVER be used
 
-        const {baseUrl, urlResolvers, loaders, alwaysAsArray, log} = config; // extract config parms
+        const {baseUrl, urlResolvers, loaders, alwaysAsArray} = config; // extract config parms
 
         const downloads = [];
         for (const dep of args) {
             if (typeof dep === 'string') { 
                 
-                // string format: [name=][type!]url or [name=]type-data!...immediate-data-here...
+                // string format: 
+                //   - [name=][type!]url or [name=][type-]data!...immediate-data-here...
+                //   - [name=][type:]url or [name=][type-]data:...immediate-data-here...
+                //   if type not explicitly specified and...
+                //      ...url/downloaded: use downloaded content-type or (if not available) url extension
+                //      ...[immediate] data: use imediate data as text
+
+                // if type is amd|umd|amd-cjs|cjs|bundled, convert to javascript
+                //  - NO prescan for: amd, umd, bundled [default, so those are NOT needed]
+                //  - prescan for: amd-cjs, cjs
+                //  - also keep track: actualUrl -> type
+                //  - on decode, get mod-type from dict; if not, assumes no-scan amd/umd
 
                 // since [^] matches everything (including newlines), m will ALWAYS match EVERY string
                 // so no need to test for m (as in m && ...)
@@ -299,14 +327,24 @@ async function internalLoader(...args) {
                                 depModule.resolved(module); // will trigger .dependsOnMe listener from above
                                 moduleReady(module); // depModule.module === module
                                 //log(requestUrl, depModule.isLoadedWithError ? 'LOAD ERROR: ' + module.message : 'LOADED');
-                                depModule.isLoadedWithError && log(requestUrl, 'LOAD ERROR: ' + module.message);
+                                depModule.isLoadedWithError && console.error(requestUrl + ' LOAD ERROR: ' + module.message); // must be a string?
                             } 
 
                             download(requestUrl)
                                 .then(async downloaded => {
                                     const actualUrl = downloaded.responseURL || requestUrl;
                                     (actualUrl !== requestUrl) && (loadedModules[actualUrl] = depModule); // gives it a second point of entry
-                                    const treatAsType = type || downloaded.contentType || extension(actualUrl);
+
+                                    const treatAsType = (() => { 
+                                        // a 'do-expression' would be more appropriate here
+                                        // see: https://github.com/tc39/proposal-do-expressions
+                                        if (/^(amd[-])?cjs$/.test(type)) {
+                                            scanForRequires.add(actualUrl, requestUrl);
+                                            return 'javascript';
+                                        }
+                                        return type || downloaded.contentType || extension(actualUrl);
+                                    })();
+
                                     const asLoaded = loaders.find(loader => loader.t(treatAsType)).c(downloaded.content);
                                     done(/javascript/i.test(treatAsType) ? await initJSModule(config, actualUrl, asLoaded) : asLoaded);
                                 })
@@ -337,42 +375,43 @@ async function initJSModule(config, moduleUrl, moduleSourceCode) {
 
     return new Promise(async resolveJSM => { 
 
-        const {globals, useStrict, log} = config; // extract config parms
+        const {globals, useStrict} = config; // extract config parms
 
         // when resolving RELATIVE-based sub-modules, config is same as parent/asking-module
         // except for its baseUrl which now reflects its parent module
         const subModulesConfig = newConfig(config, {baseUrl: moduleUrl, alwaysAsArray: true});
         
-        const dependenciesLoader = internalLoader.bind(subModulesConfig);
+        const dependenciesLoader = internalLoader.bind(subModulesConfig); // recursion here
         
-        // basic safety & better performance: is that safe for every module?
-        useStrict && (moduleSourceCode = '"use strict";\n\n' + moduleSourceCode);
-
         const preloadedModules = name => getPreloadedModule(subModulesConfig, name);
-    
-        const { moduleExports, moduleGlobals } = genModuleInitMethods(dependenciesLoader, preloadedModules);
 
         try { 
+            const { moduleExports, moduleGlobals } = genModuleInitMethods(dependenciesLoader, preloadedModules);
+
+            // basic safety & better performance: is that safe for every module?
+            useStrict && (moduleSourceCode = '"use strict";\n' + moduleSourceCode);
+
             // customize module's virtual globals
             globals(moduleGlobals); 
 
-            // extract then preload any required dependencies
-            const deps = extractRequireDependencies(moduleSourceCode); // extract them...
-            await dependenciesLoader(...deps); // pre-load them... (should never fail?)
-            
+            if (scanForRequires.query(moduleUrl)) {
+                const deps = extractRequireDependencies(moduleSourceCode); // extract required dependencies...
+                await dependenciesLoader(...deps); // pre-load them... (should never fail?)
+            }
+
             // Try loading the module: using AsyncFunction prevents 1 module from blocking all others
             const initModule = new AsyncFunction(...Object.keys(moduleGlobals), moduleSourceCode);
+            const exported = await moduleExports(await initModule(...Object.values(moduleGlobals)));
 
-            resolveJSM(await moduleExports(await initModule(...Object.values(moduleGlobals))));
+            return resolveJSM(exported); // return because we don't want to loop again
         }
         catch(err) {
-            // would be from globals (possible) or extractRequireDependencies (unlikely)
-            resolveJSM(new ModuleLoadError(`module ${moduleUrl} initialization failed (${err.message})`, err));
+            return resolveJSM(new ModuleLoadError(`module ${moduleUrl} initialization failed (${err.message})`, err));
         }
     });
 }
 
-function genModuleInitMethods(preloadSubModules, getPreloadedModule) {
+function genModuleInitMethods(preloadSubModules, getPreloadedModule, cjs) {
 
     // generates define & require methods used by AMD modules, and module.exports used by CJS modules
     // a module can be resolved as follows:
@@ -384,7 +423,7 @@ function genModuleInitMethods(preloadSubModules, getPreloadedModule) {
     //     4- the result of the module's code, if any (i.e. as a top-level return statement)
     //     5- module's value is undefined (presumably module code runs for its side-effects)
 
-    var exportsFromDefine = false; // if define method is called, that will be the module's value
+    var exportsFromDefine = false; // if define method is called, that will be the module's value (as a promise)
 
     const exports = {}, // or use Object.create(null) instead?
           module = { exports };
@@ -392,17 +431,17 @@ function genModuleInitMethods(preloadSubModules, getPreloadedModule) {
     const exportsUsed = () => Object.keys(exports).length > 0, // means 'exports.[name] = ...' form was used
           moduleExportsAssigned = () => module.exports !== exports; // means 'module.exports = ...' form was used
 
-    const getExports = m => exportsUsed() ? exports : moduleExportsAssigned() ? module.exports : m;
+    const getExports = m => m instanceof RequiredModuleMissingError ? m : exportsUsed() ? exports : moduleExportsAssigned() ? module.exports : m;
 
     // IMPORTANT: all UMD modules test for 'define.amd' being 'truthy'
     //            but some (e.g. lodash) ALSO check that "typeof define.amd == 'object'" so...
     define.amd = {}; // ...use an object (truthy) NOT just 'true'
     function define(...args) { 
-        
+
         // CANNOT be async else init may complete before init is done!!!
         // but let getResults method know to wait for answers
 
-        exportsFromDefine = new Promise(resolveModuleAs => {
+        exportsFromDefine = new Promise(resolveModuleAs => { 
 
             // at this point we know we're in an AMD module since this define method was called from module source code
             // so parse args as per AMD modules and [any] results (or errors) becomes this module's value
@@ -411,18 +450,15 @@ function genModuleInitMethods(preloadSubModules, getPreloadedModule) {
             if (typeof moduleDefine !== 'function') 
                 return resolveModuleAs(new ModuleLoadError(`expecting module definition to be a function (was ${typeof moduleDefine})`));
 
-            if (args.length === 0) { // no explicit dependencies, so either none at all or expecting simplified commonjs (require, exports, module)...
+            if (args.length === 0) { // no explicit dependencies...
+                // ...so either none at all or expecting simplified commonjs (require, exports, module)...
                 (moduleDefine.length === 0) ? executeModuleDefinition() : executeModuleDefinition(require, exports, module);
             }
             else { // AMD expects a possibly-empty array of dependencies (or nothing)
                 const depsArray = args.pop() || []; 
                 if (Array.isArray(depsArray)) {
-                    if (depsArray.length > 0) { 
-                        preloadSubModules(...depsArray) // always an array (as per config.alwaysAsArray)
-                            .then(resolvedDeps => executeModuleDefinition(...resolvedDeps))
-                    }
-                    else 
-                        executeModuleDefinition();
+                    preloadSubModules(...depsArray) // always an array (as per internally-set config.alwaysAsArray to true above)
+                        .then(resolvedDeps => executeModuleDefinition(...resolvedDeps))
                 }
                 else
                     resolveModuleAs(new ModuleLoadError(`expecting array of dependencies (was ${typeof externals})`));
@@ -430,40 +466,37 @@ function genModuleInitMethods(preloadSubModules, getPreloadedModule) {
 
             async function executeModuleDefinition(...externalDeps) {
                 try {
-                    // moduleDefine method may be sync or async: await allows for either
+                    // moduleDefine method may be sync or async: 'await'ing allows for either
                     resolveModuleAs(getExports(await moduleDefine(...externalDeps))); 
                 }
                 catch(err) {
-                    resolveModuleAs(new ModuleLoadError(`define method failed (${err.message})`, err));
+                    resolveModuleAs(err instanceof RequiredModuleMissingError ? err : new ModuleLoadError(`define method failed (${err.message})`, err));
                 }    
             }
-
         });
     }
 
     function require(...args) {
-        try {
-            const req = args.pop(); // last or only parm
-            if (args.length === 0 && typeof req === 'string') {
-                // uses basic form: require('dependency-reference');
-                // we expect 'dependency-reference' to have been [extracted then] pre-loaded...
-                return getPreloadedModule(req); // ...else may throw RequiredModuleMissingError
-            }
-            else if (typeof req === 'function') {
-                // treat it as if it's [assumes it's] a define?
-                // meaning uses the AMD form of: require([...deps...], fcn(...deps...){}));
-                // which is just a define BUT without a module actually being "defined" 
-                // (rather, it's equivalent to code executing using an after-deps-loaded method)
-                // - but if code executing, what does this "module" become? its result, if any? and if no result?
-                // and if there is code (outside the require) that does return something: then what?
-                define(...args, req);
-            }
-            else {
-                resolveModuleAs(new ModuleLoadError(`unexpected parameters for require method (neither string nor function)`));
-            }
+        
+        // thrown errors are propagated to parent
+
+        const req = args.pop(); // last or only parm
+        if (args.length === 0 && typeof req === 'string') {
+            // uses basic form: require('dependency-reference');
+            // we expect 'dependency-reference' to have been [extracted then] pre-loaded...
+            return getPreloadedModule(req); // ...else may throw RequiredModuleMissingError
         }
-        catch(err) {
-            resolveModuleAs(err);
+        else if (typeof req === 'function') {
+            // treat it as if it's [assumes it's] a define?
+            // meaning uses the AMD form of: require([...deps...], fcn(...deps...){}));
+            // which is just a define BUT without a module actually being "defined" 
+            // (rather, it's equivalent to code executing using an after-deps-loaded method)
+            // - but if code executing, what does this "module" become? its result, if any? and if no result?
+            // and if there is code (outside the require) that does return something: then what?
+            define(...args, req);
+        }
+        else {
+            throw new ModuleLoadError(`unexpected parameters for require method (neither string nor function)`)
         }
     }
 
@@ -471,5 +504,5 @@ function genModuleInitMethods(preloadSubModules, getPreloadedModule) {
         return new Promise(async finalExports => finalExports(exportsFromDefine ? await exportsFromDefine : getExports(originalResult)));
     }
 
-    return {moduleExports, moduleGlobals: { define, require, module, exports }};
+    return {moduleExports, moduleGlobals: { define, require, module, exports }};//cjs?{ require, module, exports }:{ define, require }};
 }

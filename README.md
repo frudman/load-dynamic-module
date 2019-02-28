@@ -394,3 +394,77 @@ Read [NPM package.json DOC](https://docs.npmjs.com/files/package.json) and also 
 
 ```
 
+
+### Issues when loading AMD and CJS modules
+
+Unless we know ahead of time if a module is AMD or CJS, you have 2 possible strategies to load them:
+1- pass both (define,require) and (exports, module.exports) then see which one was used after initialization
+2- pass 1 (e.g. define, require) and if that fails pass the other (in this case exports, module.exports)
+
+The problem with 2 passes is that at least some of thecode will execute twice and this may be bad (e.g. if some one
+time init must take place, so doing it twice will corrupt/affect/change data)
+
+The problem with (1) is that in order to do it right, the module's code must be scanned every time in order
+to extract the require's name (i.e. the dependencies) in order to preload them before running the init code.
+
+#### Problems with above strategy:
+1- preloading will only work if the deps are static (i.e. single string); if the dep is an expression (so likely dynamic)
+   there is no way to preload it (no way to extract it);
+    - we could modify the code to add an 'await' to then allow for resolution at runtime, with 2 more caveats:
+        1- unless the await is at the top-level (where we can control loading as async), a nested require
+           will likely introduce a syntax error (because not in an async function); and it's a fool's errand to try to 'async-tify'
+           these methods, then those calling them, and so on...
+        2- if the require is itself part of a longer expression (e.g. require('x').prop or require('x')(imm.fcn.call)), 
+           the simple await will break the call because await is right associative meaning it will now await the whole
+           expression (i.e. await (require('x').prop)) rather than the intended correction (i.e. (await require('x')).prop)
+2- preloading assumes that those extracted dependencies are not already loaded, as would be the case with bundled
+   modules (e.g. using webpack). 
+   
+   In fact, although the requires **might** still be present in the source code, the bundler
+   (e.g. webpack) expects to do its own loading of these modules from bundled code. If we now "extract" those dependencies 
+   then try to download them, we'd be doing this with likely invalid links (pointing to sources that only were relevant
+   during the build period) and downloading code that does not need to be downloaded anyway (for example, a simple vue component
+   can include 200 such requires, none of which need downloading, and most of which would return 404 if attempted)
+
+   3- **MIGHT** be present because if optimized for production, the requires may also have been removed (e.g. webpack removes that
+      part of the code) so when loading that code, extracting requires would not be a problem (since they have been removed by webpack)
+    2b- a more difficult issus still is if some of those bundled requires are not in fact embedded, in which case we'd need to know,
+        somehow, to load those but not the others
+
+#### Solution/Workaround
+
+- when loading module, we always pass all four bits (define, require, exports, module.exports)
+- we always scan for requires UNLESS EXPLICITLY told not to
+    - implies that you know whether or not a module is bundled or not
+
+## so which is default???
+- if AMD, no requires but can preload dep-array
+- if AMD+simplified-cjs
+    - scan for requires to preload as dep-array
+- if CJS, scan for requires to preload as dep-array
+    - and everything below? only if relative?
+- if BUNDLED, no prescan: assumes deps are part of package
+
+- build array based on name of format for module
+    - if 'cjs:axios' all axios now cjs
+
+
+- module names:
+    - 'cjs:name' 
+        - EXTRACTS: expects cjs and extracts requires
+    - 'amd:name' or 'umd:name' expects amd/umd and:
+        - extract requires only if using simplified-commonjs format
+        - does not extract requires otherwise
+            - but does preload [array-based-dependencies]
+    - 'bundled' does not extract requires (assumes part of bundle)
+        - can be either cjs or amd/umd
+        - so acts as self-contained
+    OR
+    - scan for requires or not:
+        - preload
+        - no-preload
+        - no-pre-scan (default is scan)
+        - bundled (no scan); can be either cjs or amd/umd
+        - cjs: scan for requires always
+            - unbundled: same but might be amd/umd
+        - unbundled (scan & preload requires)
