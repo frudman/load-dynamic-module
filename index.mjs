@@ -6,16 +6,15 @@
 // - so 'axios=axios/dist/axios.min.js' will now allow 'axios' to be used directly
 // - problem is if a module name matches a window property name (e.g. alert)
 
-// TODO: seriously consider switching to JSDELIVR.NET (from unpkg.com)
-//       because (as of Feb 2019) unpkg seems to have reliability issues (500/404/403) [growing pains?]
-//       (see: https://w3techs.com/technologies/comparison/cd-jsdelivr,cd-unpkg)
-//       jsdelivr docs: https://www.jsdelivr.com/features
-//       - may affect relative-name dependency resolution (jsdelivr does redirects differently)
-//       - jsdelivr may be best when using amd explicitly, and specifying actual
-//         paths (e.g. 'axios/dist/axios.min.js' instead of 'axios')
-
-
 /*
+    TODO: seriously consider switching to JSDELIVR.NET (from unpkg.com)
+          because (as of Feb 2019) unpkg seems to have reliability issues (http 50x & 40x) [growing pains?]
+          (see: https://w3techs.com/technologies/comparison/cd-jsdelivr,cd-unpkg)
+          jsdelivr docs: https://www.jsdelivr.com/features
+          - may affect relative-name dependency resolution (jsdelivr does redirects differently)
+          - jsdelivr may be best when using amd explicitly, and specifying actual
+            paths (e.g. 'axios/dist/axios.min.js' instead of 'axios')
+
     if/when moving over to jsdelivr, use tests below for url resolution
     hint: we want LAST ONE...
 
@@ -44,7 +43,6 @@
 
 // misc helpers
 import { http as download, AsyncFunction, loadCSSCode } from 'tidbits';//'my-npm-packages/freddy-javascript-utils';
-
 import { extractRequireDependencies } from './extract-require';
 
 const urlResolvers = [
@@ -119,11 +117,6 @@ const extension = str => (str||'').split('.').pop();
 // a more "accurate" (or complete) method, though using more code, is as follows:
 //const extension = (str, keepDot = false) => ((str||'').match(/[.][^.]*$/)||[''])[0].substring(keepDot ? 0 : 1);
 
-// must keep track of previously loaded modules that may be referenced by multiple different URLs:
-// e.g. 'assert' becomes 'https://unpkg.com/assert' becomes 'https://unpkg.com/assert@1.4.1/assert.js'
-// e.g. using relative URLs: './helpers/bind' (from within https://unpkg.com/axios@0.18.0/index.js) 
-//      becomes 'https://unpkg.com/axios@0.18.0/lib/helpers/bind'
-
 const scanForRequires = (function(){
 
     // keeps track of javascript modules which need to be pre-scanned for embedded
@@ -131,38 +124,81 @@ const scanForRequires = (function(){
 
     const scan = [];
     return {
+        // add prefix paths (remove filename, if any: filename if a .extension is present)
         add: (...args) => scan.push(...args.map(a => a.replace(/[/][^/]+?[.][^./]+$/, '').toLowerCase())),
+        // looks if a name is prefixed with existing/known path (that path is then returned)
+        // lcn parm is NOT TO BE PASSED by callers (cheap shortcut (hack?) to set variable ahead of method)
+        // callers only pass the name to be queried
         query: (name, lcn = name.toLowerCase()) => !!scan.find(s => lcn.startsWith(s)),
     }
 })(); 
 
 
-const loadedModules = {}; // holds all modules' meta info (id, module, state)
-const addModule = (id, module) => loadedModules[id] = new DynamicModule({id, module});
+const cached = (function() {
 
-function getModuleMetaOrCreate(id) {
+    // keep track of previously loaded modules
+    // each may be referenced by different references:
+    // e.g. 'assert' becomes 'https://unpkg.com/assert' becomes 'https://unpkg.com/assert@1.4.1/assert.js'
+    // e.g. using relative URLs: './helpers/bind' (from within https://unpkg.com/axios@0.18.0/index.js) 
+    //      becomes 'https://unpkg.com/axios@0.18.0/lib/helpers/bind'
+    // ALSO: any module assigned a global name is accessible via that global name:
+    // e.g. 'axios=axios/dist/axios.min.js' is accessible as:
+    //      window.axios; loadModule('axios'); loadModule('axios/dist/axios.min.js');
+    //      and loadModule('https://unpkg.com/axios@0.18.1/dist/axios.min.js');
 
-    // returns module's META (NOT its .module) if it exists (loaded or not)
-    // creates the new module's meta if doesn't exist
-    
-    return loadedModules[id] || (loadedModules[id] = new DynamicModule({id}));
-}
+    const loadedModules = {}; // holds all modules' meta info (module, state)
 
-function getPreloadedModule(config, ref) {
+    return { getModuleMetaOrCreate, getPreloadedModule, setModule, addRefToMeta, refs };
 
-    // this is a SYNC module (to be used within AMD & CJS 'require')
-    // returns actual module (i.e. moduleMeta.module) if it exists AND is loaded
-    // throws error otherwise
+    function getModuleMetaOrCreate(ref, url) {
 
-    const {baseUrl, urlResolvers} = config;
+        // returns module's META (NOT its .module) if it exists (loaded or not)
+        // creates the new module's meta if doesn't exist
 
-    const id = urlResolvers.find(resolver => resolver.t(ref, baseUrl)).r(ref, baseUrl);
+        if (ref[0] === '.') {
+            // relative refs cannot be used as explicit/absolute references
+            return loadedModules[url] || addRefToMeta(url); // only consider a full url
+        }
+        else {
+            return loadedModules[ref] || loadedModules[url] || addRefToMeta(ref, addRefToMeta(url));
+        }
+    }
 
-    const lm = loadedModules[ref] || loadedModules[id]; // TODO: should check REF only if it DOESN'T start with ./
-    if (lm && lm.isLoaded) return lm.module;
-    throw new RequiredModuleMissingError(id);
-}
+    function refs(mm) {
+        return Object.entries(loadedModules).filter(([name,meta]) => meta === mm).map(([name,meta]) => name);
+    }
 
+    function addRefToMeta(ref, mm) {
+        return loadedModules[ref] = mm || new ModuleMeta();
+    }
+
+    function getPreloadedModule(ref) {
+
+        // this is a SYNC module (to be used within AMD & CJS 'require')
+        // returns ACTUAL MODULE (i.e. moduleMeta.module) if it exists AND is loaded
+        // throws error otherwise
+
+        // important usage detail: expects a config object to be explicitly bound to this method
+
+        const {baseUrl, urlResolvers} = this; 
+
+        // a relative ref must be resolved
+        const id = urlResolvers.find(resolver => resolver.t(ref, baseUrl)).r(ref, baseUrl);
+
+        const lm = (ref[0] === '.') ? loadedModules[id] : (loadedModules[ref] || loadedModules[id]);
+        if (lm && lm.isLoaded) 
+            return lm.module;
+
+        throw new RequiredModuleMissingError(id);
+    }
+
+    function setModule(ref, module) {
+
+        // allows modules loaded by other means to be referenced by all
+
+        loadedModules[ref] =  Object.values(loadedModules).find(lm => lm.module === module) || new ModuleMeta(module);
+    }
+})();
 
 class DownloadError extends Error {
     constructor(msg, err) { 
@@ -185,17 +221,18 @@ class RequiredModuleMissingError extends Error {
     }
 }
 
-// cheap means to ensure no infinite loop while resolving dependencies
-const LONGEST_LIKELY_DEPENDENCY_CHAIN = 30; // number of modules depending on me BEFORE I'm initially resolved
+// max number of modules depending on me BEFORE I'm initially resolved
+// if more than that, we assume that it's an error. this is a cheap
+// method to ensure no infinite loop while resolving dependencies
+const LONGEST_LIKELY_DEPENDENCY_CHAIN = 30; 
 
-class DynamicModule {
+class ModuleMeta {
 
-    // really just a Module but that name conflicts with ES6 'Module' name used by modern browsers (when loading
-    // modules!) - so let's keep it distinct
+    // not worth keeping addtl meta info (e.g. refs, src url) until (if) actually needed for something
 
-    constructor({id, module} = {}) {
-        id && (this.id = id); // its source URL
-        module && (this.module = module); // DO NOT SET IT without actual module (else will break isLoaded below)
+    constructor(module) {
+        // DO NOT SET IT (i.e. .module) without actual module (else will break isLoaded below)
+        module && (this.module = module); 
     }
 
     get isLoaded() { return 'module' in this };
@@ -236,23 +273,10 @@ class DynamicModule {
 
         // as per method 2 (above)
         if (deps.length > LONGEST_LIKELY_DEPENDENCY_CHAIN)
-            this.resolved(new ModuleLoadError(`likely cycle in module resolution for ${this.id} (depth=${deps.length})`));
+            this.resolved(new ModuleLoadError(`likely infinite cycle in module resolution for [${cached.refs(this).join(';')}]`));
     }
 }
 
-// allows modules loaded by other means to be referenced by all
-function knownModule(ref, module) {
-
-    const {config, baseLoader} = this;
-
-    // store name as it would be resolved: different (e.g. relative) URLS pointing to same module load only once
-    // e.g. so 'load-dynamic-module' becomes https://unpkg.com/load-dynamic-module
-    const id = config.urlResolvers.find(resolver => resolver.t(ref)).r(ref); // will always find one (because of catch-all)
-
-    addModule(id, new DynamicModule({id, module}));
-
-    return baseLoader; // allows for chaining
-}
 
 const newConfig = (original, updates = {}) => ({
     ...original, // start with this one...
@@ -265,12 +289,16 @@ const newConfig = (original, updates = {}) => ({
 
 function createLoader(baseConfig, overrides = {}) {
     const customConfig = newConfig(baseConfig, overrides);
-    const customLoader = internalLoader.bind(customConfig);
-    customLoader.load = customLoader; // can use fcn(...) OR can chain in single call fcn.config({...}).knownModule().load(...)
-    customLoader.knownModule = knownModule.bind({config: customConfig, baseLoader: customLoader});
+    const customLoader = internalLoader.bind(customConfig); // can use as fcn(...)...
+
+    // add methods
+    customLoader.load = customLoader; // ...OR can chain in single call fcn.config({...}).load(...)
     customLoader.config = createLoader.bind(null, customConfig);
 
-    //customLoader.all = () => loadedModules; // when debugging
+    customLoader.knownModule = (ref,module) => { 
+        cached.setModule(ref,module); 
+        return customLoader; 
+    }
 
     return customLoader;
 }
@@ -298,12 +326,13 @@ async function internalLoader(...args) {
     // each arg is a module reference or actual string data: see readme.md#module-references
     // internalLoader must always be explicitly bound to a configuration object (internalLoader.bind({config}))
 
-    const config = this; // for readability
+    const config = this; // for readability below
 
     return new Promise(resolveWhenReady => { 
 
         // NO REJECT CLAUSE: will never fail (but there can be modules that are resolved to Error)
-        // - so unloadable modules (e.g. network or syntax errors) are set to the ERROR that made them fail (can test for 'module instanceof Error')
+        // - so unloadable modules (e.g. network or syntax errors) are set to the ERROR that made them fail 
+        //  (can always test for 'module instanceof Error')
         // - so reject clause (of Promise above) would NEVER be used
 
         const {baseUrl, urlResolvers, loaders, alwaysAsArray} = config; // extract config parms
@@ -319,12 +348,6 @@ async function internalLoader(...args) {
                 //      ...url/downloaded: use downloaded content-type or (if not available) url extension
                 //      ...[immediate] data: use imediate data as text
 
-                // if type is amd|umd|amd-cjs|cjs|bundled, convert to javascript
-                //  - NO prescan for: amd, umd, bundled [default, so those are NOT needed]
-                //  - prescan for: amd-cjs, cjs
-                //  - also keep track: actualUrl -> type
-                //  - on decode, get mod-type from dict; if not, assumes no-scan amd/umd
-
                 // since [^] matches everything (including newlines), m will ALWAYS match EVERY string
                 // so no need to test for m (as in m && ...)
                 const m = dep.match(/([a-z0-9_$]+[=])?(([a-z]+)([-]data)?[:!])?([^]+)/i), 
@@ -332,16 +355,23 @@ async function internalLoader(...args) {
                       isData = /data/i.test(m[3]) || m[4],
                       data = isData ? m[5] : '',
                       isHttpx = /https?/i.test(m[3]),
-                      url = isData ? '' : isHttpx ? (m[3] + '://' + m[5]) : m[5],
+                      ref = isData ? '' : isHttpx ? (m[3] + '://' + m[5]) : m[5],
                       type = m[3]; // if explicit (here), takes precedence over downloaded content-type
 
-                const makeGlobal = m => (globalName && ((window[globalName] = m), addModule(globalName, m)), m);
+                function makeGlobal(m) {
+                    if (globalName) {
+                        window[globalName] = m;
+                        cached.setModule(globalName, m);
+                    }
+                    return m;
+                }
+
                 const addDependency = m => downloads.push(makeGlobal(m));
 
-                if (url) { // DOWNLOAD DATA
+                if (ref) { // DOWNLOAD DATA
 
-                    const requestUrl = urlResolvers.find(resolver => resolver.t(url, baseUrl)).r(url, baseUrl);
-                    const depModule = getModuleMetaOrCreate(requestUrl);
+                    const requestUrl = urlResolvers.find(resolver => resolver.t(ref, baseUrl)).r(ref, baseUrl);
+                    const depModule = cached.getModuleMetaOrCreate(ref, requestUrl);
 
                     if (depModule.isLoaded) {
                         addDependency(depModule.module); // no need for a promise, already resolved
@@ -368,7 +398,7 @@ async function internalLoader(...args) {
                             download(requestUrl)
                                 .then(async downloaded => {
                                     const actualUrl = downloaded.responseURL || requestUrl;
-                                    (actualUrl !== requestUrl) && (loadedModules[actualUrl] = depModule); // gives it a second point of entry
+                                    (actualUrl !== requestUrl) && cached.addRefToMeta(actualUrl, depModule);
 
                                     const treatAsType = (() => { 
                                         // a 'do-expression' would be more appropriate here
@@ -399,7 +429,7 @@ async function internalLoader(...args) {
                 }
             }
             else { // ACTUAL OBJECT
-                downloads.push(dep); // all done: not a remembered module
+                downloads.push(dep); // all done: not a remembered or gloabally known module
             }
         }
 
@@ -422,8 +452,7 @@ async function initJSModule(config, moduleUrl, moduleSourceCode) {
         const subModulesConfig = newConfig(config, {baseUrl: moduleUrl, alwaysAsArray: true});
         
         const dependenciesLoader = internalLoader.bind(subModulesConfig); // recursion here
-        
-        const preloadedModules = name => getPreloadedModule(subModulesConfig, name);
+        const preloadedModules = cached.getPreloadedModule.bind(subModulesConfig);
 
         try { 
             const { moduleExports, moduleGlobals } = genModuleInitMethods(dependenciesLoader, preloadedModules);
@@ -451,7 +480,7 @@ async function initJSModule(config, moduleUrl, moduleSourceCode) {
     });
 }
 
-function genModuleInitMethods(preloadSubModules, getPreloadedModule, cjs) {
+function genModuleInitMethods(preloadSubModules, preloadedModule) {
 
     // generates define & require methods used by AMD modules, and module.exports used by CJS modules
     // a module can be resolved as follows:
@@ -471,7 +500,7 @@ function genModuleInitMethods(preloadSubModules, getPreloadedModule, cjs) {
     const exportsUsed = () => Object.keys(exports).length > 0, // means 'exports.[name] = ...' form was used
           moduleExportsAssigned = () => module.exports !== exports; // means 'module.exports = ...' form was used
 
-    const getExports = m => m instanceof RequiredModuleMissingError ? m : exportsUsed() ? exports : moduleExportsAssigned() ? module.exports : m;
+    const getExports = m => m instanceof RequiredModuleMissingError ? m : moduleExportsAssigned() ? module.exports : exportsUsed() ? exports : m;
 
     // IMPORTANT: all UMD modules test for 'define.amd' being 'truthy'
     //            but some (e.g. lodash) ALSO check that "typeof define.amd == 'object'" so...
@@ -524,8 +553,8 @@ function genModuleInitMethods(preloadSubModules, getPreloadedModule, cjs) {
         
         if (args.length === 0 && typeof req === 'string') {
             // uses basic form: require('dependency-reference');
-            // we expect 'dependency-reference' to have been [extracted then] pre-loaded...
-            return getPreloadedModule(req); // ...else may throw RequiredModuleMissingError
+            // 'dependency-reference' was [previously downloaded/extracted then] pre-loaded...
+            return preloadedModule(req); // ...else may throw RequiredModuleMissingError
         }
         
         if (typeof req === 'function') {
@@ -542,9 +571,10 @@ function genModuleInitMethods(preloadSubModules, getPreloadedModule, cjs) {
         }
     }
 
-    async function moduleExports(originalResult) {
-        return new Promise(async finalExports => finalExports(exportsFromDefine ? await exportsFromDefine : getExports(originalResult)));
-    }
-
-    return {moduleExports, moduleGlobals: { define, require, module, exports }};//cjs?{ require, module, exports }:{ define, require }};
+    return {
+        async moduleExports(originalResult) {
+            return new Promise(async finalExports => finalExports(exportsFromDefine ? await exportsFromDefine : getExports(originalResult)));
+        }, 
+        moduleGlobals: { define, require, module, exports }
+    };
 }
