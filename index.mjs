@@ -85,7 +85,8 @@ const urlResolvers = [
     // default for name-only urls: consider them NPM modules and use UNPKG as per above
     // note: for unpkg, we trim trailing slash(es) in requires (e.g. https://unpkg.com/assert@1.4.1/assert.js)
     // not sure the standard allows for trailing slashes anyway (tbv)
-    { t: (u,b) => /^[a-z_$]/i.test(u), r: (u,b) => `https://unpkg.com/${u.replace(/[/]+$/,'')}`, }, // see readme.md...
+    //{ t: (u,b) => /^[a-z_$]/i.test(u), r: (u,b) => `https://unpkg.com/${u.replace(/[/]+$/,'')}`, }, // see readme.md...
+    { t: (u,b) => /^[a-z_$]/i.test(u), r: (u,b) => `https://cdn.jsdelivr.net/npm/${u.replace(/[/]+$/,'')}`, }, // see readme.md...
 
     // our catch all (required for simpler logic in knownModule and later on)
     // based on: https://developer.mozilla.org/en-US/docs/Web/API/URL
@@ -327,8 +328,6 @@ export default publicLoader;
 
 // and while we're at it...
 publicLoader.knownModule('load-dynamic-module', publicLoader);
-
-var ty=0;
 
 async function internalLoader(...args) {
 
